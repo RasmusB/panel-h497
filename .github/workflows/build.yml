@@ -40,7 +40,7 @@ jobs:
       - name: Install build dependencies and Raspberry Pi kernel headers
         run: |
           apt-get install -y --no-install-recommends \
-            gcc make cpp device-tree-compiler kmod \
+            gcc make cpp device-tree-compiler kmod perl python3 \
             linux-headers-rpi-v8 linux-headers-rpi-2712
 
       - name: Build driver for each kernel
