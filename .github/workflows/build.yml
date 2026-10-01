@@ -70,7 +70,7 @@ jobs:
           ./compile-overlay.sh panel-h497.dts
           cp panel-h497.dtbo out/
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: panel-h497-${{ matrix.release }}
           path: out/
