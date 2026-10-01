@@ -21,15 +21,19 @@ jobs:
     container: debian:${{ matrix.release }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Add Raspberry Pi apt repository
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl gpg
-          curl -fsSL https://archive.raspberrypi.com/debian/raspberrypi.gpg.key \
-            | gpg --dearmor -o /usr/share/keyrings/raspberrypi.gpg
-          echo "deb [signed-by=/usr/share/keyrings/raspberrypi.gpg] https://archive.raspberrypi.com/debian ${{ matrix.release }} main" \
+          apt-get install -y --no-install-recommends ca-certificates curl
+          # Use the newest archive keyring package. The legacy raspberrypi.gpg.key
+          # has SHA-1 self-signatures, which apt on trixie rejects.
+          pool=https://archive.raspberrypi.com/debian/pool/main/r/raspberrypi-archive-keyring
+          deb=$(curl -fsSL "$pool/" | grep -oE 'raspberrypi-archive-keyring_[^"]+_all\.deb' | sort -uV | tail -1)
+          curl -fsSL -o /tmp/keyring.deb "$pool/$deb"
+          dpkg -i /tmp/keyring.deb
+          echo "deb [signed-by=/usr/share/keyrings/raspberrypi-archive-keyring.pgp] https://archive.raspberrypi.com/debian ${{ matrix.release }} main" \
             > /etc/apt/sources.list.d/raspi.list
           apt-get update
 
@@ -41,12 +45,21 @@ jobs:
 
       - name: Build driver for each kernel
         run: |
-          set -e
+          # Report the tail of a failed build as an annotation, which is
+          # visible on the run page without opening the full log.
+          annotate() {
+            echo "::error title=$1::$(tail -40 "$2" | sed -e 's/%/%25/g' | sed -e ':a;N;$!ba;s/\n/%0A/g')"
+          }
           for kdir in /usr/src/linux-headers-*-rpi-v8 /usr/src/linux-headers-*-rpi-2712; do
             kver=$(basename "$kdir" | sed 's/^linux-headers-//')
             echo "::group::$kver"
-            make -C "$kdir" M="$PWD/driver" clean
-            make -C "$kdir" M="$PWD/driver" W=1 modules
+            if ! { make -C "$kdir" M="$PWD/driver" clean &&
+                   make -C "$kdir" M="$PWD/driver" W=1 modules; } > build.log 2>&1; then
+              cat build.log; echo "::endgroup::"
+              annotate "build failed: $kver" build.log
+              exit 1
+            fi
+            cat build.log
             modinfo driver/panel-h497.ko | grep -E 'vermagic|alias'
             mkdir -p out/$kver && cp driver/panel-h497.ko out/$kver/
             echo "::endgroup::"
@@ -57,7 +70,7 @@ jobs:
           ./compile-overlay.sh panel-h497.dts
           cp panel-h497.dtbo out/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: panel-h497-${{ matrix.release }}
           path: out/
