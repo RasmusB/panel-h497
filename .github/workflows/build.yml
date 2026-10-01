@@ -1,0 +1,63 @@
+# Builds the driver against current Raspberry Pi OS kernels and compiles the
+# overlay. Runs on every push/PR and weekly, so a new Raspberry Pi kernel that
+# breaks the build is caught before customers hit it.
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+
+jobs:
+  build:
+    # Kernel header packages contain arm64 build tools, so build natively on arm64
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        release: [bookworm, trixie]
+    container: debian:${{ matrix.release }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add Raspberry Pi apt repository
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl gpg
+          curl -fsSL https://archive.raspberrypi.com/debian/raspberrypi.gpg.key \
+            | gpg --dearmor -o /usr/share/keyrings/raspberrypi.gpg
+          echo "deb [signed-by=/usr/share/keyrings/raspberrypi.gpg] https://archive.raspberrypi.com/debian ${{ matrix.release }} main" \
+            > /etc/apt/sources.list.d/raspi.list
+          apt-get update
+
+      - name: Install build dependencies and Raspberry Pi kernel headers
+        run: |
+          apt-get install -y --no-install-recommends \
+            gcc make cpp device-tree-compiler kmod \
+            linux-headers-rpi-v8 linux-headers-rpi-2712
+
+      - name: Build driver for each kernel
+        run: |
+          set -e
+          for kdir in /usr/src/linux-headers-*-rpi-v8 /usr/src/linux-headers-*-rpi-2712; do
+            kver=$(basename "$kdir" | sed 's/^linux-headers-//')
+            echo "::group::$kver"
+            make -C "$kdir" M="$PWD/driver" clean
+            make -C "$kdir" M="$PWD/driver" W=1 modules
+            modinfo driver/panel-h497.ko | grep -E 'vermagic|alias'
+            mkdir -p out/$kver && cp driver/panel-h497.ko out/$kver/
+            echo "::endgroup::"
+          done
+
+      - name: Compile overlay
+        run: |
+          ./compile-overlay.sh panel-h497.dts
+          cp panel-h497.dtbo out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: panel-h497-${{ matrix.release }}
+          path: out/

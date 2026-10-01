@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * AUO/Topwin H497TLB01 720x1280 AMOLED (RM69052) on Raspberry Pi DSI.
+ * Display only; requires the panel-h497 kernel module (driver/).
+ *
+ * Parameters (defaults match the CM4 carrier board):
+ *   dsi0           Use DSI0 instead of DSI1
+ *   lanes=<n>      DSI data lanes, 1-4 (default 4; Pi 4B connector: 2)
+ *   rotation=<deg> Panel mounting rotation: 0, 90, 180 or 270 (default 0)
+ *   reset_gpio=<n> RESX GPIO, active low (default 27)
+ *   vddi_gpio=<n>  VDDI 1.8 V LDO enable GPIO, active high (default 18)
+ *   vdd_gpio=<n>   VDD 3.1 V LDO enable GPIO, active high (default 23)
+ *
+ * Example: dtoverlay=panel-h497,lanes=2,rotation=90,reset_gpio=5
+ */
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/gpio/gpio.h>
+
+/ {
+    compatible = "brcm,bcm2711";
+
+    fragment@0 {
+        target-path = "/";
+        __overlay__ {
+            panel_vddi: panel-vddi {
+                compatible = "regulator-fixed";
+                regulator-name = "panel_vddi";
+                regulator-min-microvolt = <1800000>;
+                regulator-max-microvolt = <1800000>;
+                gpio = <&gpio 18 GPIO_ACTIVE_HIGH>;
+                enable-active-high;
+            };
+
+            panel_vdd: panel-vdd {
+                compatible = "regulator-fixed";
+                regulator-name = "panel_vdd";
+                regulator-min-microvolt = <3100000>;
+                regulator-max-microvolt = <3100000>;
+                gpio = <&gpio 23 GPIO_ACTIVE_HIGH>;
+                enable-active-high;
+            };
+        };
+    };
+
+    dsi_frag: fragment@1 {
+        target = <&dsi1>;
+        __overlay__ {
+            status = "okay";
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            port {
+                dsi_out: endpoint {
+                    remote-endpoint = <&panel_in>;
+                };
+            };
+
+            panel: panel@0 {
+                compatible = "auo,h497tlb01";
+                reg = <0>;
+                vddi-supply = <&panel_vddi>;
+                vdd-supply = <&panel_vdd>;
+                reset-gpios = <&gpio 27 GPIO_ACTIVE_LOW>;
+                dsi-lanes = <4>;
+                rotation = <0>;
+
+                port {
+                    panel_in: endpoint {
+                        remote-endpoint = <&dsi_out>;
+                    };
+                };
+            };
+        };
+    };
+
+    __overrides__ {
+        dsi0 = <&dsi_frag>, "target:0=", <&dsi0>;
+        lanes = <&panel>, "dsi-lanes:0";
+        rotation = <&panel>, "rotation:0";
+        reset_gpio = <&panel>, "reset-gpios:4";
+        vddi_gpio = <&panel_vddi>, "gpio:4";
+        vdd_gpio = <&panel_vdd>, "gpio:4";
+    };
+};
