@@ -201,14 +201,26 @@ static int h497_enable(struct drm_panel *panel)
 	return 0;
 }
 
+/*
+ * All shutdown commands are sent here: with prepare_prev_first, the DSI
+ * host is powered down before unprepare() runs, so the link is gone by then.
+ */
 static int h497_disable(struct drm_panel *panel)
 {
 	struct h497 *ctx = to_h497(panel);
 	int ret;
 
+	ctx->prepared = false;
+
 	ret = mipi_dsi_dcs_set_display_off(ctx->dsi);
 	if (ret < 0)
 		dev_warn(&ctx->dsi->dev, "display off failed: %d\n", ret);
+
+	ret = mipi_dsi_dcs_enter_sleep_mode(ctx->dsi);
+	if (ret < 0)
+		dev_warn(&ctx->dsi->dev, "sleep in failed: %d\n", ret);
+	/* Panel needs 120 ms in Sleep In before power can be removed */
+	msleep(120);
 
 	return 0;
 }
@@ -216,14 +228,6 @@ static int h497_disable(struct drm_panel *panel)
 static int h497_unprepare(struct drm_panel *panel)
 {
 	struct h497 *ctx = to_h497(panel);
-	int ret;
-
-	ctx->prepared = false;
-
-	ret = mipi_dsi_dcs_enter_sleep_mode(ctx->dsi);
-	if (ret < 0)
-		dev_warn(&ctx->dsi->dev, "sleep in failed: %d\n", ret);
-	msleep(120);
 
 	gpiod_set_value_cansleep(ctx->reset, 1);
 	regulator_disable(ctx->vdd);
