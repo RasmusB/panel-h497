@@ -15,7 +15,10 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 - [ ] **Check brightness control:** `echo 50 > /sys/class/backlight/panel-h497/brightness` should visibly dim the panel. If it doesn't, the RM69052 needs a manufacturer-specific brightness register instead of the standard `0x51`.
 - [ ] **Check the console direction.** If text is upside down, change `fbcon=rotate:1` to `rotate:3` in `/boot/firmware/cmdline.txt`.
 - [ ] **Try overlay rotation instead of `fbcon=rotate`.** Remove `fbcon=rotate:1` from `cmdline.txt` and use `dtoverlay=panel-h497,rotation=90` (or `270`). This also tells desktops which way the panel is mounted. Check which value gives the right direction.
-- [ ] **Install driver 1.1 and the new overlay** (lanes/pins/rotation parameters) on the Pi. See [Overlay parameters](#overlay-parameters).
+- [x] **Installed driver 1.2 and the new overlay** (lanes/pins/rotation parameters) on the Pi.
+- [x] **Breakout board power test** (no panel): VDDI and VDD measured correct when on and 0 V when switched off by the driver. HAT EEPROM answers at 0x50 and is empty (all `0xFF`).
+- [ ] **Reboot into driver 1.2** and re-run the power-off test: `echo 4 | sudo tee /sys/class/graphics/fb0/blank`, then `echo 0 | ...`. `dmesg` should show no `sleep in failed`.
+- [ ] **Program the HAT EEPROM** (product ID, vendor, and possibly an embedded overlay so the panel is set up automatically).
 - [x] **Pushed to GitHub** (https://github.com/RasmusB/panel-h497). CI builds against Raspberry Pi OS bookworm (6.12) and trixie (6.18) kernels for Pi 4 and Pi 5 and passes.
 - [ ] **Optional: bigger console font.** Run `sudo dpkg-reconfigure console-setup` and pick Terminus 16x32.
 - [ ] **Touchscreen (Synaptics S3402) is not done yet.** See [Touchscreen](#touchscreen-not-done).
@@ -104,7 +107,8 @@ The Pi's graphics driver (vc4) generates the video signal. The panel driver tell
   7. Send `35 00` (TE on) and `53 20` (brightness control on).
   8. Send Sleep Out (`0x11`) and wait 120 ms.
 - **`enable()`** sends Display On (`0x29`) once video is already streaming.
-- **`disable()` / `unprepare()`** send Display Off, then Sleep In, wait 120 ms, assert reset, and turn off VDD, then VDDI.
+- **`disable()`** sends Display Off and Sleep In, then waits 120 ms, while the DSI link is still up.
+- **`unprepare()`** asserts reset and turns off VDD, then VDDI. It sends no commands: because of `prepare_prev_first`, the DSI controller is already off by the time it runs. Driver 1.1 sent Sleep In here, which timed out.
 - **Brightness** is a backlight device at `/sys/class/backlight/panel-h497`, range 0–255. Changes are sent as DCS `0x51 <value>`. Changes made while the panel is off are saved and applied when it powers on.
 - **Module parameters** let you tune timings without rebuilding (see below).
 
