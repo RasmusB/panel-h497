@@ -8,7 +8,8 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 
 ## Remaining steps
 
-- [ ] **Connect the breakout board** with the Pi powered off, then power on.
+- [ ] **Fix high-speed reception** (see the [bring-up log](#bring-up-log-2026-10-03-first-panel-tests)): check the clock lane routing, polarity and continuity.
+- [x] **Connect the breakout board** with the Pi powered off, then power on.
 - [ ] **Check for an image.** The screen is black for about 6 s, then boot text and the login prompt appear, in landscape.
 - [ ] **If the screen stays dark,** collect `dmesg | grep -iE 'h497|dsi'` and note whether the panel glows or flickers at all.
 - [ ] **If the image rolls, tears or flickers,** try non-burst mode (see [Tuning](#tuning)), then adjust the timings if needed.
@@ -17,8 +18,8 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 - [ ] **Try overlay rotation instead of `fbcon=rotate`.** Remove `fbcon=rotate:1` from `cmdline.txt` and use `dtoverlay=panel-h497,rotation=90` (or `270`). This also tells desktops which way the panel is mounted. Check which value gives the right direction.
 - [x] **Installed driver 1.2 and the new overlay** (lanes/pins/rotation parameters) on the Pi.
 - [x] **Breakout board power test** (no panel): VDDI and VDD measured correct when on and 0 V when switched off by the driver. HAT EEPROM answers at 0x50 and is empty (all `0xFF`).
-- [ ] **First boot with panel on 2 lanes** (`dtoverlay=panel-h497,lanes=2`, set 2026-10-03) because of the prototype's D3 polarity error. Run `./panel-check.sh`.
-- [ ] **Then test 4 lanes to see the failure mode.** Expected: TE at about 60 Hz (LP commands only use lane 0), but no or garbled video. If 2 lanes also gives TE but no image, the RM69052 may need its lane count set by a register.
+- [x] **First boot with panel on 2 lanes** (`dtoverlay=panel-h497,lanes=2`, set 2026-10-03) because of the prototype's D3 polarity error. Run `./panel-check.sh`.
+- [x] **Then test 4 lanes to see the failure mode.** Done: no difference, see the [bring-up log](#bring-up-log-2026-10-03-first-panel-tests). Expected: TE at about 60 Hz (LP commands only use lane 0), but no or garbled video. If 2 lanes also gives TE but no image, the RM69052 may need its lane count set by a register.
 - [ ] **Fix for the next board revision:** D3P/D3N are swapped in the routing (datasheet lists pin 27 = D3N, pin 28 = D3P, the reverse of the other pairs). Prototype VBAT is fed from 5 V, above the 4.5 V recommended maximum (abs max 5.5 V); production will use the LiPo.
 - [ ] **Reboot into driver 1.2** and re-run the power-off test: `echo 4 | sudo tee /sys/class/graphics/fb0/blank`, then `echo 0 | ...`. `dmesg` should show no `sleep in failed`.
 - [ ] **Program the HAT EEPROM** (product ID, vendor, and possibly an embedded overlay so the panel is set up automatically).
@@ -32,6 +33,28 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 - [ ] **Optional: submit the driver to mainline Linux** as `panel-raydium-rm69052.c`, with a YAML devicetree binding.
 
 ---
+
+## Bring-up log (2026-10-03, first panel tests)
+
+| Test | Result |
+|---|---|
+| Panel ID (LP read `DA/DB/DC`) | `82 00 15`, stable: link, power and reset OK |
+| Power mode `0A` after init | `98` after Sleep Out, `9C` after Display On: commands take effect |
+| Self-diagnostics `0F` | `F0`: all OK |
+| DSI error count `05` | 0 in every configuration |
+| Scanline `45` | Stuck at 0: display timing never runs |
+| All pixels on (`23`), framebuffer filled white | Panel stays black |
+| VBAT current (5 V and 3.3 V) | 0 mA in all states: OLED supply never starts |
+| 2 lanes at 1 Gbit/s, 2 lanes at 500 Mbit/s, sync pulse mode, 4 lanes at 429 Mbit/s | No change |
+| **DCS write in LP mode** | **5/5 received** |
+| **DCS write in HS mode** | **0/4 received** |
+
+**Conclusion:** the panel receives nothing in high-speed mode. Low-power signalling on lane 0 works, so lane 0 wiring is fine. Suspects, in order: clock lane (CKP/CKN, pins 21/22) polarity or routing, HS signal integrity on the breakout, a break in the clock pair. Check the PCB layout, not just the schematic, since the D3 swap was a routing error.
+
+Also noted:
+- The Pi's DSI driver returns 0 instead of the byte count for successful reads, so `mipi_dsi_dcs_get_power_mode()` reports `-ENODATA`. The driver reads registers directly to work around this.
+- LP commands and reads sometimes time out while video is running. Consider retries in the driver.
+- TE (GPIO 22) has no level shifting (1.8 V into a 3.3 V input): add a shifter in the next revision.
 
 ## Background
 
