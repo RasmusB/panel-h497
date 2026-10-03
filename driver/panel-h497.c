@@ -204,6 +204,8 @@ static void h497_debug_read(struct h497 *ctx, const char *stage)
  *   echo "r 0a"       > dcs   read 1 byte from register 0x0A
  *   echo "r da 3"     > dcs   read 3 bytes
  *   echo "w 51 80"    > dcs   write command 0x51 with parameter 0x80
+ *   echo "h 51 80"    > dcs   same, but sent in high-speed mode (tests the
+ *                             clock lane and lane 0 HS receivers)
  *   cat dcs                   show the result of the last command
  * Only works while the panel is powered. Not serialized against the DRM
  * core's own commands; for debugging only.
@@ -225,7 +227,7 @@ static ssize_t h497_dcs_write(struct file *file, const char __user *ubuf,
 	kbuf[count] = '\0';
 
 	tok = strsep(&p, " \t\n");
-	if (!tok || strlen(tok) != 1 || (tok[0] != 'r' && tok[0] != 'w'))
+	if (!tok || strlen(tok) != 1 || !strchr("rwh", tok[0]))
 		return -EINVAL;
 	op = tok[0];
 
@@ -248,14 +250,21 @@ static ssize_t h497_dcs_write(struct file *file, const char __user *ubuf,
 		goto out;
 	}
 
-	if (op == 'w') {
+	if (op == 'w' || op == 'h') {
+		unsigned long flags = ctx->dsi->mode_flags;
+
+		/* The DSI core sends in LP mode only if MIPI_DSI_MODE_LPM is set */
+		if (op == 'h')
+			ctx->dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
 		ret = mipi_dsi_dcs_write_buffer(ctx->dsi, bytes, n);
+		ctx->dsi->mode_flags = flags;
+
 		if (ret < 0)
 			snprintf(ctx->dbg_result, sizeof(ctx->dbg_result),
-				 "w %02x: error %d\n", bytes[0], ret);
+				 "%c %02x: error %d\n", op, bytes[0], ret);
 		else
 			snprintf(ctx->dbg_result, sizeof(ctx->dbg_result),
-				 "w %02x: ok\n", bytes[0]);
+				 "%c %02x: ok\n", op, bytes[0]);
 	} else {
 		u8 rx[32] = { 0 };
 		size_t len = n > 1 ? bytes[1] : 1;
