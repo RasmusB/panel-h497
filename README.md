@@ -25,7 +25,7 @@ Requires Raspberry Pi OS (64-bit) with kernel headers (`linux-headers-rpi-v8`, n
 sudo apt install --no-install-recommends dkms device-tree-compiler cpp
 
 # Driver (DKMS)
-VER=1.11
+VER=1.12
 sudo mkdir -p /usr/src/panel-h497-$VER
 sudo cp driver/{panel-h497.c,Makefile,dkms.conf} /usr/src/panel-h497-$VER/
 sudo dkms install panel-h497/$VER

@@ -60,6 +60,9 @@ MODULE_PARM_DESC(late_init, "Power and reset the panel before the DSI host start
 static int init_set;
 module_param(init_set, int, 0644);
 MODULE_PARM_DESC(init_set, "Init sequence: 0 = I2C capture, 1 = datasheet verbatim, 2 = none (OTP defaults) (default 0)");
+static int init_brightness = 0x20;
+module_param(init_brightness, int, 0644);
+MODULE_PARM_DESC(init_brightness, "Brightness (0x51) sent before video, 0-255; -1 = don't send (default 0x20)");
 static bool early_display_on;
 module_param(early_display_on, bool, 0644);
 MODULE_PARM_DESC(early_display_on, "Send Display On before video starts, as the TC358870 does (default N)");
@@ -491,6 +494,20 @@ static int h497_init_and_wake(struct h497 *ctx)
 	 * video (Sleep Out, 300 ms, Display On, 40 ms, video). Once video
 	 * runs, the link may have no LP window left for commands.
 	 */
+	/*
+	 * Set brightness while the link is still in LP. Commands sent after
+	 * video starts may never arrive, leaving the panel at its power-on
+	 * default (maximum).
+	 */
+	if (init_brightness >= 0) {
+		u8 level = min(init_brightness, MAX_BRIGHTNESS);
+
+		ret = mipi_dsi_dcs_write(ctx->dsi, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
+					 &level, 1);
+		if (ret < 0)
+			dev_warn(dev, "initial brightness failed: %d\n", ret);
+	}
+
 	ctx->display_on_sent = false;
 	if (early_display_on) {
 		msleep(180);
