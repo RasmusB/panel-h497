@@ -46,6 +46,9 @@ module_param(vbp, uint, 0444);
 MODULE_PARM_DESC(vbp, "Vertical back porch (default 8)");
 module_param(burst, bool, 0444);
 MODULE_PARM_DESC(burst, "Use DSI burst mode (default Y); N = non-burst sync pulses");
+static bool debug;
+module_param(debug, bool, 0644);
+MODULE_PARM_DESC(debug, "Read back panel ID and power mode during power-up (default N)");
 
 #define HACTIVE 720
 #define VACTIVE 1280
@@ -134,6 +137,47 @@ static int h497_send_init(struct h497 *ctx)
 	return 0;
 }
 
+/*
+ * Debug: read the panel's ID and power mode over the DSI link (needs a
+ * bus turnaround on lane 0). A reply at all proves the link, power and
+ * reset are OK; the power mode bits show which commands took effect.
+ */
+static void h497_debug_read(struct h497 *ctx, const char *stage)
+{
+	struct device *dev = &ctx->dsi->dev;
+	u8 id[3] = { 0 }, mode = 0;
+	ssize_t r1, r2, r3;
+	int ret;
+
+	if (!debug)
+		return;
+
+	ret = mipi_dsi_set_maximum_return_packet_size(ctx->dsi, 1);
+	if (ret < 0) {
+		dev_info(dev, "[%s] set max return size failed: %d\n", stage, ret);
+		return;
+	}
+
+	r1 = mipi_dsi_dcs_read(ctx->dsi, 0xDA, &id[0], 1);
+	r2 = mipi_dsi_dcs_read(ctx->dsi, 0xDB, &id[1], 1);
+	r3 = mipi_dsi_dcs_read(ctx->dsi, 0xDC, &id[2], 1);
+	dev_info(dev, "[%s] ID DA/DB/DC = %02x %02x %02x (ret %zd %zd %zd)\n",
+		 stage, id[0], id[1], id[2], r1, r2, r3);
+
+	ret = mipi_dsi_dcs_get_power_mode(ctx->dsi, &mode);
+	if (ret < 0) {
+		dev_info(dev, "[%s] power mode read failed: %d\n", stage, ret);
+		return;
+	}
+	/* Bit 7 (booster) has no kernel define */
+	dev_info(dev, "[%s] power mode 0x%02x: booster %s, sleep %s, normal mode %s, display %s\n",
+		 stage, mode,
+		 mode & BIT(7) ? "on" : "off",
+		 mode & MIPI_DSI_DCS_POWER_MODE_SLEEP ? "out" : "in",
+		 mode & MIPI_DSI_DCS_POWER_MODE_NORMAL ? "on" : "off",
+		 mode & MIPI_DSI_DCS_POWER_MODE_DISPLAY ? "on" : "off");
+}
+
 static int h497_prepare(struct drm_panel *panel)
 {
 	struct h497 *ctx = to_h497(panel);
@@ -163,6 +207,8 @@ static int h497_prepare(struct drm_panel *panel)
 	/* OTP load (tREST) can take up to 120 ms before Sleep Out is allowed */
 	msleep(120);
 
+	h497_debug_read(ctx, "after reset");
+
 	ret = h497_send_init(ctx);
 	if (ret)
 		goto err_reset;
@@ -173,6 +219,8 @@ static int h497_prepare(struct drm_panel *panel)
 		goto err_reset;
 	}
 	msleep(120);
+
+	h497_debug_read(ctx, "after sleep out");
 
 	ctx->prepared = true;
 
@@ -197,6 +245,8 @@ static int h497_enable(struct drm_panel *panel)
 		return ret;
 	}
 	msleep(20);
+
+	h497_debug_read(ctx, "after display on");
 
 	return 0;
 }
