@@ -17,6 +17,9 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 - [ ] **Try overlay rotation instead of `fbcon=rotate`.** Remove `fbcon=rotate:1` from `cmdline.txt` and use `dtoverlay=panel-h497,rotation=90` (or `270`). This also tells desktops which way the panel is mounted. Check which value gives the right direction.
 - [x] **Installed driver 1.2 and the new overlay** (lanes/pins/rotation parameters) on the Pi.
 - [x] **Breakout board power test** (no panel): VDDI and VDD measured correct when on and 0 V when switched off by the driver. HAT EEPROM answers at 0x50 and is empty (all `0xFF`).
+- [ ] **First boot with panel on 2 lanes** (`dtoverlay=panel-h497,lanes=2`, set 2026-10-03) because of the prototype's D3 polarity error. Run `./panel-check.sh`.
+- [ ] **Then test 4 lanes to see the failure mode.** Expected: TE at about 60 Hz (LP commands only use lane 0), but no or garbled video. If 2 lanes also gives TE but no image, the RM69052 may need its lane count set by a register.
+- [ ] **Fix for the next board revision:** D3P/D3N are swapped in the routing (datasheet lists pin 27 = D3N, pin 28 = D3P, the reverse of the other pairs). Prototype VBAT is fed from 5 V, above the 4.5 V recommended maximum (abs max 5.5 V); production will use the LiPo.
 - [ ] **Reboot into driver 1.2** and re-run the power-off test: `echo 4 | sudo tee /sys/class/graphics/fb0/blank`, then `echo 0 | ...`. `dmesg` should show no `sleep in failed`.
 - [ ] **Program the HAT EEPROM** (product ID, vendor, and possibly an embedded overlay so the panel is set up automatically).
 - [x] **Pushed to GitHub** (https://github.com/RasmusB/panel-h497). CI builds against Raspberry Pi OS bookworm (6.12) and trixie (6.18) kernels for Pi 4 and Pi 5 and passes.
