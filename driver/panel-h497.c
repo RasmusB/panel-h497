@@ -54,6 +54,9 @@ MODULE_PARM_DESC(noncont, "Non-continuous DSI clock: clock lane returns to LP be
 static bool late_init;
 module_param(late_init, bool, 0444);
 MODULE_PARM_DESC(late_init, "Power and reset the panel before the DSI host starts, send init once the link is up (default N)");
+static bool early_power;
+module_param(early_power, bool, 0444);
+MODULE_PARM_DESC(early_power, "Power up and reset the panel at probe, before the DSI host starts its clock (default N)");
 static int lane_reg = -1;
 module_param(lane_reg, int, 0644);
 MODULE_PARM_DESC(lane_reg, "Value for page 0 register BA (MIPI lane count); -1 = derive from lanes, (lanes-1)<<5 (default -1)");
@@ -73,6 +76,7 @@ struct h497 {
 	struct gpio_desc *reset;
 	enum drm_panel_orientation orientation;
 	bool prepared;		/* panel powered and out of sleep */
+	bool powered;		/* supplies on and reset released */
 	struct dentry *debugfs;
 	struct mutex dbg_lock;	/* protects dbg_result */
 	char dbg_result[128];
@@ -182,6 +186,26 @@ static int h497_read_reg(struct h497 *ctx, u8 cmd, u8 *buf, size_t len)
 	return ret < 0 ? ret : 0;
 }
 
+/* Acknowledge and Error Report flags (MIPI DSI spec) */
+static void h497_decode_errors(struct h497 *ctx, const char *stage, u16 e)
+{
+	static const char * const names[16] = {
+		"SoT", "SoT sync", "EoT sync", "escape entry", "LP tx sync",
+		"timeout", "false control", "contention", "ECC 1-bit",
+		"ECC multi-bit", "checksum", "data type", "VC ID",
+		"length", "reserved", "protocol",
+	};
+	char buf[160];
+	int i, pos = 0;
+
+	for (i = 0; i < 16; i++)
+		if (e & BIT(i))
+			pos += scnprintf(buf + pos, sizeof(buf) - pos, " %s",
+					 names[i]);
+	dev_info(&ctx->dsi->dev, "[%s] possible error report 0x%04x:%s\n",
+		 stage, e, pos ? buf : " none");
+}
+
 /*
  * Debug: read the panel's ID, power mode and DSI error count (needs a bus
  * turnaround on lane 0). A reply proves the link, power and reset work; the
@@ -213,6 +237,10 @@ static void h497_debug_read(struct h497 *ctx, const char *stage)
 			 mode & MIPI_DSI_DCS_POWER_MODE_SLEEP ? "out" : "in",
 			 mode & MIPI_DSI_DCS_POWER_MODE_NORMAL ? "on" : "off",
 			 mode & MIPI_DSI_DCS_POWER_MODE_DISPLAY ? "on" : "off");
+
+	/* If the panel answers with an error report, bytes are its flags */
+	if (h497_read_reg(ctx, 0x45, id, 2) == 0 && (id[0] || id[1]))
+		h497_decode_errors(ctx, stage, id[0] | id[1] << 8);
 
 	/* Get Error Count on DSI: bit 7 = overflow, bits 6:0 = count */
 	ret = h497_read_reg(ctx, MIPI_DCS_GET_ERROR_COUNT_ON_DSI, &errs, 1);
@@ -367,9 +395,9 @@ static int h497_init_and_wake(struct h497 *ctx)
 	return 0;
 }
 
-static int h497_prepare(struct drm_panel *panel)
+/* Supplies on, reset pulse, wait for OTP load. Leaves the panel in Sleep In. */
+static int h497_power_on(struct h497 *ctx)
 {
-	struct h497 *ctx = to_h497(panel);
 	struct device *dev = &ctx->dsi->dev;
 	int ret;
 
@@ -384,7 +412,8 @@ static int h497_prepare(struct drm_panel *panel)
 	ret = regulator_enable(ctx->vdd);
 	if (ret) {
 		dev_err(dev, "failed to enable vdd: %d\n", ret);
-		goto err_vddi;
+		regulator_disable(ctx->vddi);
+		return ret;
 	}
 
 	msleep(40);
@@ -396,20 +425,40 @@ static int h497_prepare(struct drm_panel *panel)
 	/* OTP load (tREST) can take up to 120 ms before Sleep Out is allowed */
 	msleep(120);
 
+	ctx->powered = true;
+
+	return 0;
+}
+
+static void h497_power_off(struct h497 *ctx)
+{
+	gpiod_set_value_cansleep(ctx->reset, 1);
+	regulator_disable(ctx->vdd);
+	regulator_disable(ctx->vddi);
+	ctx->powered = false;
+}
+
+static int h497_prepare(struct drm_panel *panel)
+{
+	struct h497 *ctx = to_h497(panel);
+	int ret;
+
+	/* With early_power the panel was already powered at probe */
+	if (!ctx->powered) {
+		ret = h497_power_on(ctx);
+		if (ret)
+			return ret;
+	}
+
 	if (!late_init) {
 		ret = h497_init_and_wake(ctx);
-		if (ret)
-			goto err_reset;
+		if (ret) {
+			h497_power_off(ctx);
+			return ret;
+		}
 	}
 
 	return 0;
-
-err_reset:
-	gpiod_set_value_cansleep(ctx->reset, 1);
-	regulator_disable(ctx->vdd);
-err_vddi:
-	regulator_disable(ctx->vddi);
-	return ret;
 }
 
 static int h497_enable(struct drm_panel *panel)
@@ -461,11 +510,7 @@ static int h497_disable(struct drm_panel *panel)
 
 static int h497_unprepare(struct drm_panel *panel)
 {
-	struct h497 *ctx = to_h497(panel);
-
-	gpiod_set_value_cansleep(ctx->reset, 1);
-	regulator_disable(ctx->vdd);
-	regulator_disable(ctx->vddi);
+	h497_power_off(to_h497(panel));
 
 	return 0;
 }
@@ -620,12 +665,25 @@ static int h497_probe(struct mipi_dsi_device *dsi)
 					     "failed to register backlight\n");
 	}
 
+	/*
+	 * Bring the panel out of reset before the DSI host starts, so its
+	 * clock lane receiver sees the host's LP-to-HS entry sequence. Only
+	 * affects the first power-up; later ones follow prepare().
+	 */
+	if (early_power) {
+		ret = h497_power_on(ctx);
+		if (ret)
+			dev_warn(dev, "early power-on failed: %d\n", ret);
+	}
+
 	drm_panel_add(&ctx->panel);
 
 	ret = mipi_dsi_attach(dsi);
 	if (ret < 0) {
 		dev_err(dev, "failed to attach to DSI host: %d\n", ret);
 		drm_panel_remove(&ctx->panel);
+		if (ctx->powered)
+			h497_power_off(ctx);
 		return ret;
 	}
 
