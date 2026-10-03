@@ -49,7 +49,21 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 | **DCS write in LP mode** | **5/5 received** |
 | **DCS write in HS mode** | **0/4 received** |
 
-**Conclusion:** the panel receives nothing in high-speed mode. Low-power signalling on lane 0 works, so lane 0 wiring is fine. Suspects, in order: clock lane (CKP/CKN, pins 21/22) polarity or routing, HS signal integrity on the breakout, a break in the clock pair. Check the PCB layout, not just the schematic, since the D3 swap was a routing error.
+Later tests (2026-10-03, driver 1.5–1.8):
+
+| Test | Result |
+|---|---|
+| Non-continuous clock (`noncont=1`) | Panel starts receiving HS traffic, but reports errors: ECC, checksum, data type, VC ID, EoT sync (`0x1F04`) |
+| Same at 120 Mbit/s, 1 lane | SoT sync errors only (`0x0002`) |
+| 1, 2 and 4 lanes (D3 reworked), 120–429 Mbit/s | Always corrupted packets, never a clean frame |
+| `BA` register (assumed lane count), 7 values | No effect |
+| THS-EXIT raised from 224 to 512 ns (datasheet asks for ≥ 300 ns) | No effect |
+| Continuous clock, panel powered before the DSI host starts (`early_power=1`) | Same errors (`EoT sync`, `false control`) |
+| Panel on the TC358870 HDMI board | **Works** (image wraps with a pink stripe on a new source; likely the source's HDMI timing) |
+
+**Current conclusion:** the panel and the init sequence are fine, and LP signalling works. HS packets from the Pi arrive corrupted at the link level in every configuration. Next: compare CK and D0 waveforms (common mode, swing, ringing, clock continuity) between the TC358870 board and the Pi path, and try another FPC cable between the CM4 IO board and the breakout.
+
+**Earlier conclusion (before `noncont`):** the panel receives nothing in high-speed mode. Low-power signalling on lane 0 works, so lane 0 wiring is fine. Suspects, in order: clock lane (CKP/CKN, pins 21/22) polarity or routing, HS signal integrity on the breakout, a break in the clock pair. Check the PCB layout, not just the schematic, since the D3 swap was a routing error.
 
 Also noted:
 - The Pi's DSI driver returns 0 instead of the byte count for successful reads, so `mipi_dsi_dcs_get_power_mode()` reports `-ENODATA`. The driver reads registers directly to work around this.
