@@ -54,6 +54,9 @@ MODULE_PARM_DESC(noncont, "Non-continuous DSI clock: clock lane returns to LP be
 static bool late_init;
 module_param(late_init, bool, 0444);
 MODULE_PARM_DESC(late_init, "Power and reset the panel before the DSI host starts, send init once the link is up (default N)");
+static int lane_reg = -1;
+module_param(lane_reg, int, 0644);
+MODULE_PARM_DESC(lane_reg, "Value for page 0 register BA (MIPI lane count); -1 = derive from lanes, (lanes-1)<<5 (default -1)");
 static bool debug;
 module_param(debug, bool, 0644);
 MODULE_PARM_DESC(debug, "Read back panel ID and power mode during power-up (default N)");
@@ -88,7 +91,7 @@ static const u8 h497_init[] = {
 	/* Page 0 */
 	6, 0xF0, 0x55, 0xAA, 0x52, 0x08, 0x00,
 	4, 0xB0, 0x00, 0x10, 0x10,
-	2, 0xBA, 0x60,
+	2, 0xBA, 0x60,		/* lane count, replaced at runtime */
 	8, 0xBB, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77,
 	/* Page 2 */
 	6, 0xF0, 0x55, 0xAA, 0x52, 0x08, 0x02,
@@ -135,8 +138,23 @@ static int h497_send_init(struct h497 *ctx)
 
 	while (p < end) {
 		u8 len = *p++;
+		u8 lanes_cmd[2];
+		const u8 *cmd = p;
 
-		ret = mipi_dsi_dcs_write_buffer(ctx->dsi, p, len);
+		/*
+		 * Page 0 BA sets the MIPI lane count in bits 6:5 as lanes - 1.
+		 * The capture had BA 60 (4 lanes); follow the configured lanes.
+		 */
+		if (len == 2 && p[0] == 0xBA) {
+			lanes_cmd[0] = 0xBA;
+			lanes_cmd[1] = lane_reg >= 0 ? lane_reg :
+				       (ctx->dsi->lanes - 1) << 5;
+			cmd = lanes_cmd;
+			if (debug)
+				dev_info(&ctx->dsi->dev, "BA = 0x%02x\n", lanes_cmd[1]);
+		}
+
+		ret = mipi_dsi_dcs_write_buffer(ctx->dsi, cmd, len);
 		if (ret < 0) {
 			dev_err(&ctx->dsi->dev, "init cmd 0x%02x failed: %zd\n",
 				p[0], ret);
