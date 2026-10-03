@@ -60,6 +60,9 @@ MODULE_PARM_DESC(late_init, "Power and reset the panel before the DSI host start
 static int init_set;
 module_param(init_set, int, 0644);
 MODULE_PARM_DESC(init_set, "Init sequence: 0 = I2C capture, 1 = datasheet verbatim, 2 = none (OTP defaults) (default 0)");
+static bool early_display_on;
+module_param(early_display_on, bool, 0644);
+MODULE_PARM_DESC(early_display_on, "Send Display On before video starts, as the TC358870 does (default N)");
 static bool early_power;
 module_param(early_power, bool, 0444);
 MODULE_PARM_DESC(early_power, "Power up and reset the panel at probe, before the DSI host starts its clock (default N)");
@@ -83,6 +86,7 @@ struct h497 {
 	enum drm_panel_orientation orientation;
 	bool prepared;		/* panel powered and out of sleep */
 	bool powered;		/* supplies on and reset released */
+	bool display_on_sent;	/* Display On already sent before video */
 	struct dentry *debugfs;
 	struct mutex dbg_lock;	/* protects dbg_result */
 	char dbg_result[128];
@@ -482,6 +486,24 @@ static int h497_init_and_wake(struct h497 *ctx)
 
 	h497_debug_read(ctx, "after sleep out");
 
+	/*
+	 * The TC358870 board sends Display On in LP mode before starting
+	 * video (Sleep Out, 300 ms, Display On, 40 ms, video). Once video
+	 * runs, the link may have no LP window left for commands.
+	 */
+	ctx->display_on_sent = false;
+	if (early_display_on) {
+		msleep(180);
+		ret = mipi_dsi_dcs_set_display_on(ctx->dsi);
+		if (ret < 0) {
+			dev_err(dev, "display on failed: %d\n", ret);
+			return ret;
+		}
+		msleep(40);
+		ctx->display_on_sent = true;
+		h497_debug_read(ctx, "after display on (before video)");
+	}
+
 	ctx->prepared = true;
 
 	return 0;
@@ -564,12 +586,14 @@ static int h497_enable(struct drm_panel *panel)
 			return ret;
 	}
 
-	ret = mipi_dsi_dcs_set_display_on(ctx->dsi);
-	if (ret < 0) {
-		dev_err(&ctx->dsi->dev, "display on failed: %d\n", ret);
-		return ret;
+	if (!ctx->display_on_sent) {
+		ret = mipi_dsi_dcs_set_display_on(ctx->dsi);
+		if (ret < 0) {
+			dev_err(&ctx->dsi->dev, "display on failed: %d\n", ret);
+			return ret;
+		}
+		msleep(20);
 	}
-	msleep(20);
 
 	h497_debug_read(ctx, "after display on");
 
