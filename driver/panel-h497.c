@@ -51,6 +51,9 @@ MODULE_PARM_DESC(burst, "Use DSI burst mode (default Y); N = non-burst sync puls
 static bool noncont;
 module_param(noncont, bool, 0444);
 MODULE_PARM_DESC(noncont, "Non-continuous DSI clock: clock lane returns to LP between transfers (default N)");
+static bool no_eot;
+module_param(no_eot, bool, 0444);
+MODULE_PARM_DESC(no_eot, "Don't send EoT packets after HS bursts, for DSI 1.0 receivers (default N)");
 static bool late_init;
 module_param(late_init, bool, 0444);
 MODULE_PARM_DESC(late_init, "Power and reset the panel before the DSI host starts, send init once the link is up (default N)");
@@ -726,6 +729,8 @@ static int h497_probe(struct mipi_dsi_device *dsi)
 		dsi->mode_flags |= MIPI_DSI_MODE_VIDEO_SYNC_PULSE;
 	if (noncont)
 		dsi->mode_flags |= MIPI_DSI_CLOCK_NON_CONTINUOUS;
+	if (no_eot)
+		dsi->mode_flags |= MIPI_DSI_MODE_NO_EOT_PACKET;
 
 	drm_panel_init(&ctx->panel, dev, &h497_funcs, DRM_MODE_CONNECTOR_DSI);
 	/*
