@@ -13,11 +13,13 @@
  */
 
 #include <linux/backlight.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/regulator/consumer.h>
+#include <linux/uaccess.h>
 
 #include <video/mipi_display.h>
 
@@ -62,6 +64,9 @@ struct h497 {
 	struct gpio_desc *reset;
 	enum drm_panel_orientation orientation;
 	bool prepared;		/* panel powered and out of sleep */
+	struct dentry *debugfs;
+	struct mutex dbg_lock;	/* protects dbg_result */
+	char dbg_result[128];
 };
 
 static inline struct h497 *to_h497(struct drm_panel *panel)
@@ -138,45 +143,170 @@ static int h497_send_init(struct h497 *ctx)
 }
 
 /*
- * Debug: read the panel's ID and power mode over the DSI link (needs a
- * bus turnaround on lane 0). A reply at all proves the link, power and
- * reset are OK; the power mode bits show which commands took effect.
+ * Read one DCS register. The vc4 DSI host returns 0 (not the byte count) on
+ * a successful read, so only negative values are errors.
+ */
+static int h497_read_reg(struct h497 *ctx, u8 cmd, u8 *buf, size_t len)
+{
+	ssize_t ret;
+
+	ret = mipi_dsi_set_maximum_return_packet_size(ctx->dsi, len);
+	if (ret < 0)
+		return ret;
+
+	ret = mipi_dsi_dcs_read(ctx->dsi, cmd, buf, len);
+	return ret < 0 ? ret : 0;
+}
+
+/*
+ * Debug: read the panel's ID, power mode and DSI error count (needs a bus
+ * turnaround on lane 0). A reply proves the link, power and reset work; the
+ * power mode bits show which commands took effect.
  */
 static void h497_debug_read(struct h497 *ctx, const char *stage)
 {
 	struct device *dev = &ctx->dsi->dev;
-	u8 id[3] = { 0 }, mode = 0;
-	ssize_t r1, r2, r3;
-	int ret;
+	u8 id[3] = { 0 }, mode = 0, errs = 0;
+	int r1, r2, r3, ret;
 
 	if (!debug)
 		return;
 
-	ret = mipi_dsi_set_maximum_return_packet_size(ctx->dsi, 1);
-	if (ret < 0) {
-		dev_info(dev, "[%s] set max return size failed: %d\n", stage, ret);
-		return;
-	}
-
-	r1 = mipi_dsi_dcs_read(ctx->dsi, 0xDA, &id[0], 1);
-	r2 = mipi_dsi_dcs_read(ctx->dsi, 0xDB, &id[1], 1);
-	r3 = mipi_dsi_dcs_read(ctx->dsi, 0xDC, &id[2], 1);
-	dev_info(dev, "[%s] ID DA/DB/DC = %02x %02x %02x (ret %zd %zd %zd)\n",
+	r1 = h497_read_reg(ctx, 0xDA, &id[0], 1);
+	r2 = h497_read_reg(ctx, 0xDB, &id[1], 1);
+	r3 = h497_read_reg(ctx, 0xDC, &id[2], 1);
+	dev_info(dev, "[%s] ID DA/DB/DC = %02x %02x %02x (ret %d %d %d)\n",
 		 stage, id[0], id[1], id[2], r1, r2, r3);
 
-	ret = mipi_dsi_dcs_get_power_mode(ctx->dsi, &mode);
-	if (ret < 0) {
+	ret = h497_read_reg(ctx, MIPI_DCS_GET_POWER_MODE, &mode, 1);
+	if (ret < 0)
 		dev_info(dev, "[%s] power mode read failed: %d\n", stage, ret);
-		return;
-	}
-	/* Bit 7 (booster) has no kernel define */
-	dev_info(dev, "[%s] power mode 0x%02x: booster %s, sleep %s, normal mode %s, display %s\n",
-		 stage, mode,
-		 mode & BIT(7) ? "on" : "off",
-		 mode & MIPI_DSI_DCS_POWER_MODE_SLEEP ? "out" : "in",
-		 mode & MIPI_DSI_DCS_POWER_MODE_NORMAL ? "on" : "off",
-		 mode & MIPI_DSI_DCS_POWER_MODE_DISPLAY ? "on" : "off");
+	else
+		/* Bit 7 (booster) has no kernel define */
+		dev_info(dev, "[%s] power mode 0x%02x: booster %s, sleep %s, normal mode %s, display %s\n",
+			 stage, mode,
+			 mode & BIT(7) ? "on" : "off",
+			 mode & MIPI_DSI_DCS_POWER_MODE_SLEEP ? "out" : "in",
+			 mode & MIPI_DSI_DCS_POWER_MODE_NORMAL ? "on" : "off",
+			 mode & MIPI_DSI_DCS_POWER_MODE_DISPLAY ? "on" : "off");
+
+	/* Get Error Count on DSI: bit 7 = overflow, bits 6:0 = count */
+	ret = h497_read_reg(ctx, MIPI_DCS_GET_ERROR_COUNT_ON_DSI, &errs, 1);
+	if (ret < 0)
+		dev_info(dev, "[%s] DSI error count read failed: %d\n", stage, ret);
+	else
+		dev_info(dev, "[%s] DSI errors seen by panel: %u%s\n", stage,
+			 errs & 0x7f, errs & 0x80 ? " (overflowed)" : "");
 }
+
+/*
+ * Debugfs interface for bring-up: /sys/kernel/debug/panel-h497/dcs
+ *   echo "r 0a"       > dcs   read 1 byte from register 0x0A
+ *   echo "r da 3"     > dcs   read 3 bytes
+ *   echo "w 51 80"    > dcs   write command 0x51 with parameter 0x80
+ *   cat dcs                   show the result of the last command
+ * Only works while the panel is powered. Not serialized against the DRM
+ * core's own commands; for debugging only.
+ */
+static ssize_t h497_dcs_write(struct file *file, const char __user *ubuf,
+			      size_t count, loff_t *ppos)
+{
+	struct h497 *ctx = file->private_data;
+	char kbuf[256], *p = kbuf, *tok;
+	u8 bytes[64];
+	unsigned int n = 0, val;
+	char op;
+	int ret;
+
+	if (count >= sizeof(kbuf))
+		return -EINVAL;
+	if (copy_from_user(kbuf, ubuf, count))
+		return -EFAULT;
+	kbuf[count] = '\0';
+
+	tok = strsep(&p, " \t\n");
+	if (!tok || strlen(tok) != 1 || (tok[0] != 'r' && tok[0] != 'w'))
+		return -EINVAL;
+	op = tok[0];
+
+	while ((tok = strsep(&p, " \t\n")) && n < ARRAY_SIZE(bytes)) {
+		if (!*tok)
+			continue;
+		if (kstrtouint(tok, 16, &val) || val > 0xff)
+			return -EINVAL;
+		bytes[n++] = val;
+	}
+	if (n == 0)
+		return -EINVAL;
+
+	mutex_lock(&ctx->dbg_lock);
+
+	if (!ctx->prepared) {
+		snprintf(ctx->dbg_result, sizeof(ctx->dbg_result),
+			 "error: panel not powered\n");
+		ret = -ENODEV;
+		goto out;
+	}
+
+	if (op == 'w') {
+		ret = mipi_dsi_dcs_write_buffer(ctx->dsi, bytes, n);
+		if (ret < 0)
+			snprintf(ctx->dbg_result, sizeof(ctx->dbg_result),
+				 "w %02x: error %d\n", bytes[0], ret);
+		else
+			snprintf(ctx->dbg_result, sizeof(ctx->dbg_result),
+				 "w %02x: ok\n", bytes[0]);
+	} else {
+		u8 rx[32] = { 0 };
+		size_t len = n > 1 ? bytes[1] : 1;
+		int i, pos;
+
+		if (len < 1 || len > sizeof(rx)) {
+			ret = -EINVAL;
+			goto out;
+		}
+		ret = h497_read_reg(ctx, bytes[0], rx, len);
+		if (ret < 0) {
+			snprintf(ctx->dbg_result, sizeof(ctx->dbg_result),
+				 "r %02x: error %d\n", bytes[0], ret);
+		} else {
+			pos = snprintf(ctx->dbg_result, sizeof(ctx->dbg_result),
+				       "r %02x:", bytes[0]);
+			for (i = 0; i < len; i++)
+				pos += snprintf(ctx->dbg_result + pos,
+						sizeof(ctx->dbg_result) - pos,
+						" %02x", rx[i]);
+			snprintf(ctx->dbg_result + pos,
+				 sizeof(ctx->dbg_result) - pos, "\n");
+		}
+	}
+
+out:
+	mutex_unlock(&ctx->dbg_lock);
+	return ret < 0 ? ret : count;
+}
+
+static ssize_t h497_dcs_read(struct file *file, char __user *ubuf,
+			     size_t count, loff_t *ppos)
+{
+	struct h497 *ctx = file->private_data;
+	ssize_t ret;
+
+	mutex_lock(&ctx->dbg_lock);
+	ret = simple_read_from_buffer(ubuf, count, ppos, ctx->dbg_result,
+				      strlen(ctx->dbg_result));
+	mutex_unlock(&ctx->dbg_lock);
+
+	return ret;
+}
+
+static const struct file_operations h497_dcs_fops = {
+	.owner = THIS_MODULE,
+	.open = simple_open,
+	.read = h497_dcs_read,
+	.write = h497_dcs_write,
+	.llseek = default_llseek,
+};
 
 static int h497_prepare(struct drm_panel *panel)
 {
@@ -438,6 +568,10 @@ static int h497_probe(struct mipi_dsi_device *dsi)
 		return ret;
 	}
 
+	mutex_init(&ctx->dbg_lock);
+	ctx->debugfs = debugfs_create_dir("panel-h497", NULL);
+	debugfs_create_file("dcs", 0600, ctx->debugfs, ctx, &h497_dcs_fops);
+
 	return 0;
 }
 
@@ -445,6 +579,7 @@ static void h497_remove(struct mipi_dsi_device *dsi)
 {
 	struct h497 *ctx = mipi_dsi_get_drvdata(dsi);
 
+	debugfs_remove_recursive(ctx->debugfs);
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
 }
