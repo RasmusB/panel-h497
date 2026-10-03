@@ -48,6 +48,12 @@ module_param(vbp, uint, 0444);
 MODULE_PARM_DESC(vbp, "Vertical back porch (default 8)");
 module_param(burst, bool, 0444);
 MODULE_PARM_DESC(burst, "Use DSI burst mode (default Y); N = non-burst sync pulses");
+static bool noncont;
+module_param(noncont, bool, 0444);
+MODULE_PARM_DESC(noncont, "Non-continuous DSI clock: clock lane returns to LP between transfers (default N)");
+static bool late_init;
+module_param(late_init, bool, 0444);
+MODULE_PARM_DESC(late_init, "Power and reset the panel before the DSI host starts, send init once the link is up (default N)");
 static bool debug;
 module_param(debug, bool, 0644);
 MODULE_PARM_DESC(debug, "Read back panel ID and power mode during power-up (default N)");
@@ -317,6 +323,32 @@ static const struct file_operations h497_dcs_fops = {
 	.llseek = default_llseek,
 };
 
+/* Send the init sequence and take the panel out of sleep. Needs the DSI host up. */
+static int h497_init_and_wake(struct h497 *ctx)
+{
+	struct device *dev = &ctx->dsi->dev;
+	int ret;
+
+	h497_debug_read(ctx, "after reset");
+
+	ret = h497_send_init(ctx);
+	if (ret)
+		return ret;
+
+	ret = mipi_dsi_dcs_exit_sleep_mode(ctx->dsi);
+	if (ret < 0) {
+		dev_err(dev, "sleep out failed: %d\n", ret);
+		return ret;
+	}
+	msleep(120);
+
+	h497_debug_read(ctx, "after sleep out");
+
+	ctx->prepared = true;
+
+	return 0;
+}
+
 static int h497_prepare(struct drm_panel *panel)
 {
 	struct h497 *ctx = to_h497(panel);
@@ -346,22 +378,11 @@ static int h497_prepare(struct drm_panel *panel)
 	/* OTP load (tREST) can take up to 120 ms before Sleep Out is allowed */
 	msleep(120);
 
-	h497_debug_read(ctx, "after reset");
-
-	ret = h497_send_init(ctx);
-	if (ret)
-		goto err_reset;
-
-	ret = mipi_dsi_dcs_exit_sleep_mode(ctx->dsi);
-	if (ret < 0) {
-		dev_err(dev, "sleep out failed: %d\n", ret);
-		goto err_reset;
+	if (!late_init) {
+		ret = h497_init_and_wake(ctx);
+		if (ret)
+			goto err_reset;
 	}
-	msleep(120);
-
-	h497_debug_read(ctx, "after sleep out");
-
-	ctx->prepared = true;
 
 	return 0;
 
@@ -377,6 +398,12 @@ static int h497_enable(struct drm_panel *panel)
 {
 	struct h497 *ctx = to_h497(panel);
 	int ret;
+
+	if (late_init) {
+		ret = h497_init_and_wake(ctx);
+		if (ret)
+			return ret;
+	}
 
 	ret = mipi_dsi_dcs_set_display_on(ctx->dsi);
 	if (ret < 0) {
@@ -545,10 +572,17 @@ static int h497_probe(struct mipi_dsi_device *dsi)
 		dsi->mode_flags |= MIPI_DSI_MODE_VIDEO_BURST;
 	else
 		dsi->mode_flags |= MIPI_DSI_MODE_VIDEO_SYNC_PULSE;
+	if (noncont)
+		dsi->mode_flags |= MIPI_DSI_CLOCK_NON_CONTINUOUS;
 
 	drm_panel_init(&ctx->panel, dev, &h497_funcs, DRM_MODE_CONNECTOR_DSI);
-	/* DSI host must be powered up before we send init commands */
-	ctx->panel.prepare_prev_first = true;
+	/*
+	 * Default: DSI host powered up before prepare(), which sends the init
+	 * sequence. With late_init the panel is powered and reset before the
+	 * host starts (so its clock lane receiver sees the HS entry sequence),
+	 * and the init sequence is sent from enable() instead.
+	 */
+	ctx->panel.prepare_prev_first = !late_init;
 
 	/*
 	 * Attached to the drm_panel, so the DRM core turns it on after
