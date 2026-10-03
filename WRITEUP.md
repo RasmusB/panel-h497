@@ -2,13 +2,14 @@
 
 Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Raydium **RM69052** driver IC), connected over MIPI DSI to a Compute Module 4 (DSI1, 4 lanes).
 
-**Status (2026-10-01):** driver and overlay are installed and load cleanly. They have **not yet been tested with the actual panel**, because the breakout board hasn't arrived.
+**Status (2026-10-03):** the panel works on the TC358870 HDMI-to-DSI board, but **not directly on the CM4's DSI1**. Low-power commands, reads and power sequencing work perfectly; high-speed video packets from the Pi are never decoded cleanly by the panel. All link-protocol and D-PHY timing differences between the Pi and the TC358870 have been tested without success (see the [bring-up log](#bring-up-log-2026-10-03-first-panel-tests)). The panel is end-of-life; switching to a panel with mainline driver support is under consideration.
 
 ---
 
 ## Remaining steps
 
-- [ ] **Fix high-speed reception** (see the [bring-up log](#bring-up-log-2026-10-03-first-panel-tests)): check the clock lane routing, polarity and continuity.
+- [ ] **Decide: continue with this panel or switch.** Options: validate the CM4 → IO board → cable path with a known-good DSI display (e.g. a Waveshare DSI panel); or move to a panel whose driver IC has mainline Linux support.
+- [ ] **Fix high-speed reception** (see the [bring-up log](#bring-up-log-2026-10-03-first-panel-tests)). Clock lane, D3, cable, lane count, timing and link protocol are ruled out.
 - [x] **Connect the breakout board** with the Pi powered off, then power on.
 - [ ] **Check for an image.** The screen is black for about 6 s, then boot text and the login prompt appear, in landscape.
 - [ ] **If the screen stays dark,** collect `dmesg | grep -iE 'h497|dsi'` and note whether the panel glows or flickers at all.
@@ -61,7 +62,30 @@ Later tests (2026-10-03, driver 1.5–1.8):
 | Continuous clock, panel powered before the DSI host starts (`early_power=1`) | Same errors (`EoT sync`, `false control`) |
 | Panel on the TC358870 HDMI board | **Works** (image wraps with a pink stripe on a new source; likely the source's HDMI timing) |
 
-**Current conclusion:** the panel and the init sequence are fine, and LP signalling works. HS packets from the Pi arrive corrupted at the link level in every configuration. Next: compare CK and D0 waveforms (common mode, swing, ringing, clock continuity) between the TC358870 board and the Pi path, and try another FPC cable between the CM4 IO board and the breakout.
+Evening tests (2026-10-03, driver 1.9–1.12, patched `vc4`):
+
+| Test | Result |
+|---|---|
+| Init set: capture / datasheet verbatim / none (OTP defaults) | Same errors with all three: the init sequence is not the cause |
+| Even `htotal` (`hbp=36`) | No change |
+| Full-colour `kmstest` pattern on DSI-1 | Panel dark, same errors: not a black-frame problem |
+| Panel driver: Display On and brightness sent before video (`early_display_on`, `init_brightness`) | Commands arrive; video still errors |
+| Patched `vc4`: event mode (no HSE/VSE), EoT on, both, as the TC358870 | Same errors |
+| Patched `vc4`: HBP+HFP as blanking packets (link in HS for nearly the whole line) | Panel lights with uniform grey (foam mura visible), **current climbs slowly towards 700 mA**, brightness commands can't be sent. Black or white framebuffer makes no difference. Interpreted as the driver IC in an undefined state, not as displayed frames. **Hazardous: stopped.** |
+| Patched `vc4`: HBP-only blanking (as the TC358870) | Commands pass, panel dark, errors |
+| D-PHY timings copied from the TC358870 (THS-PREPARE 56 → 93 ns, THS-ZERO 149 → 205 ns, TCLK-PRE/TRAIL/ZERO longer), then about double | Same errors |
+
+TC358870 reference configuration (decoded from the timestamped capture and its datasheet):
+- REFCLK 48 MHz, `MIPI_PLL_CONF 0x94AF` → **422.4 Mbit/s per lane**, 4 lanes.
+- `FUNC_MODE 0x0161`: EoT packets on, continuous HS clock.
+- `DSITX_MODE 0x81`: event mode, HSA/HBP as long blanking packets.
+- `MODE_CONFIG 0x16 → 0x06`: commands in LP during setup, HS after video starts.
+- Sequence: init in LP, Sleep Out, 300 ms, Display On, 40 ms, then video.
+- D-PHY counters (18.94 ns each): LPX 3, TCLK-PREPARE 2, TCLK-ZERO 19, TCLK-PRE 2, TCLK-POST 10, TCLK-TRAIL 6, THS-PREPARE 4, THS-ZERO 10, THS-TRAIL 5, THS-EXIT 6.
+
+The stock `vc4` hard-codes pulse mode (`ST_END`), EoT off (`HSDT_EOT_DISABLE`) and LP stop per frame, ignoring the panel driver's mode flags. A patched copy with runtime options is kept in `vc4-patched/` for reference; it is **not installed** (stock `vc4` restored).
+
+**Current conclusion:** the panel and the init sequence are fine, and LP signalling works. HS packets from the Pi arrive corrupted at the link level in every configuration, including every protocol and D-PHY timing setting the TC358870 uses. What remains is electrical or deeper in the Pi's PHY, and needs instruments that can see the HS signals, or a known-good DSI display to validate the Pi path.
 
 **Earlier conclusion (before `noncont`):** the panel receives nothing in high-speed mode. Low-power signalling on lane 0 works, so lane 0 wiring is fine. Suspects, in order: clock lane (CKP/CKN, pins 21/22) polarity or routing, HS signal integrity on the breakout, a break in the clock pair. Check the PCB layout, not just the schematic, since the D3 swap was a routing error.
 
