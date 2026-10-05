@@ -2,14 +2,20 @@
 
 Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Raydium **RM69052** driver IC), connected over MIPI DSI to a Compute Module 4 (DSI1, 4 lanes).
 
-**Status (2026-10-03):** the panel works on the TC358870 HDMI-to-DSI board, but **not directly on the CM4's DSI1**. Low-power commands, reads and power sequencing work perfectly; high-speed video packets from the Pi are never decoded cleanly by the panel. All link-protocol and D-PHY timing differences between the Pi and the TC358870 have been tested without success (see the [bring-up log](#bring-up-log-2026-10-03-first-panel-tests)). The panel is end-of-life; switching to a panel with mainline driver support is under consideration.
+**Status (2026-10-05): the panel shows an image directly on the CM4's DSI1**, 4 lanes at 120 Mbit/s per lane (about 18 Hz) so far. It took two fixes, and either fault alone kept the panel dark (see the [bring-up log for 2026-10-05](#bring-up-log-2026-10-05-root-causes-found)):
+1. **The Pi's D-PHY prepare times were too long.** The hardware adds about one byte clock (8 UI) to the value vc4 programs. Fixed with the patched `vc4` options `dsi_cprep=0 dsi_hsprep=8`.
+2. **The datasheet's D3 pinout is wrong.** Pins 27/28 are in the same order as the other pairs (P before N), not reversed. The prototype's D3 rework, done to match the datasheet, introduced the swap; the unpatched carrier board is correct.
 
 ---
 
 ## Remaining steps
 
-- [ ] **Decide: continue with this panel or switch.** Options: validate the CM4 → IO board → cable path with a known-good DSI display (e.g. a Waveshare DSI panel); or move to a panel whose driver IC has mainline Linux support.
-- [ ] **Fix high-speed reception** (see the [bring-up log](#bring-up-log-2026-10-03-first-panel-tests)). Clock lane, D3, cable, lane count, timing and link protocol are ruled out.
+- [x] ~~Decide: continue with this panel or switch.~~ Continuing: the panel works on the Pi (2026-10-05).
+- [x] **Fix high-speed reception.** Done 2026-10-05: prepare times in `vc4` plus the D3 pinout (see the [bring-up log](#bring-up-log-2026-10-05-root-causes-found)).
+- [ ] **Raise to 60 Hz** (`clock_khz=66900`, 429 Mbit/s per lane). Re-measure TCLK-PREPARE (CKN) and THS-PREPARE (D0N) there and pick `dsi_cprep`/`dsi_hsprep` so both are inside the D-PHY window. Still unknown whether the hardware overhead is a fixed ~64 ns or one byte clock (8 UI). Then try the continuous clock again.
+- [ ] **Make the prepare fix permanent:** a proper `vc4` patch (candidate for the Raspberry Pi kernel), instead of the out-of-tree copy with module options.
+- [ ] **Clean up the panel driver:** decide which bring-up options (`tc_exact`, `early_power`, `noncont`, …) stay, and set working defaults.
+- [ ] **Remove the VBAT runaway risk:** the grey "runaway" seen on 2026-10-03 happened with corrupted video. Confirm VBAT current stays sane with real images at full brightness.
 - [x] **Connect the breakout board** with the Pi powered off, then power on.
 - [ ] **Check for an image.** The screen is black for about 6 s, then boot text and the login prompt appear, in landscape.
 - [ ] **If the screen stays dark,** collect `dmesg | grep -iE 'h497|dsi'` and note whether the panel glows or flickers at all.
@@ -21,7 +27,7 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 - [x] **Breakout board power test** (no panel): VDDI and VDD measured correct when on and 0 V when switched off by the driver. HAT EEPROM answers at 0x50 and is empty (all `0xFF`).
 - [x] **First boot with panel on 2 lanes** (`dtoverlay=panel-h497,lanes=2`, set 2026-10-03) because of the prototype's D3 polarity error. Run `./panel-check.sh`.
 - [x] **Then test 4 lanes to see the failure mode.** Done: no difference, see the [bring-up log](#bring-up-log-2026-10-03-first-panel-tests). Expected: TE at about 60 Hz (LP commands only use lane 0), but no or garbled video. If 2 lanes also gives TE but no image, the RM69052 may need its lane count set by a register.
-- [ ] **Fix for the next board revision:** D3P/D3N are swapped in the routing (datasheet lists pin 27 = D3N, pin 28 = D3P, the reverse of the other pairs). Prototype VBAT is fed from 5 V, above the 4.5 V recommended maximum (abs max 5.5 V); production will use the LiPo.
+- [ ] **Next board revision:** route D3 like the other pairs and **ignore the datasheet's pin 27 = D3N / pin 28 = D3P**, which is wrong (proven 2026-10-05: the reworked board fails, the unpatched one works). Prototype VBAT is fed from 5 V, above the 4.5 V recommended maximum (abs max 5.5 V); production will use the LiPo.
 - [ ] **Reboot into driver 1.2** and re-run the power-off test: `echo 4 | sudo tee /sys/class/graphics/fb0/blank`, then `echo 0 | ...`. `dmesg` should show no `sleep in failed`.
 - [ ] **Program the HAT EEPROM** (product ID, vendor, and possibly an embedded overlay so the panel is set up automatically).
 - [x] **Pushed to GitHub** (https://github.com/RasmusB/panel-h497). CI builds against Raspberry Pi OS bookworm (6.12) and trixie (6.18) kernels for Pi 4 and Pi 5 and passes.
@@ -34,6 +40,61 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 - [ ] **Optional: submit the driver to mainline Linux** as `panel-raydium-rm69052.c`, with a YAML devicetree binding.
 
 ---
+
+## Bring-up log (2026-10-05, root causes found)
+
+Measured with a 300 MHz scope (single probe, short ground spring) at the panel FPC, between the D3 rework and the panel connector. 1 UI = 8.3 ns at 120 Mbit/s.
+
+**Step 1: exact replay of the TC358870 (driver 1.13, `tc_exact=1`).** Same failure as before: clean until video, then "false control". Init sequence and command format are ruled out.
+
+**Step 2: lane count and start-up order.**
+
+| Setup | Result |
+|---|---|
+| 4 lanes, continuous clock | Error report `0x0040` (false control) |
+| 1 lane, continuous clock | No errors, but HS writes don't arrive: panel receives nothing (clock lane never locked, panel powered after the clock started) |
+| 1 lane, continuous clock, `early_power=1`, 429 Mbit/s | Clock locks, packets corrupted (`0x1F04`). No false control |
+| 1 lane, 120 Mbit/s | SoT sync errors only (`0x0002`) |
+
+So false control comes from lanes 1–3, and lane 0 + clock had a separate HS fault.
+
+**Step 3: electrical measurements (1 lane, 120 Mbit/s).**
+
+| Measurement | Pi (stock vc4) | TC358870 board | Notes |
+|---|---|---|---|
+| Ground offset CM4 ↔ panel | 0.77 mV | — | ruled out |
+| CKP swing | 20–381 mV, sine-like | 60–264 mV at 210.5 MHz | Pi swing unchanged with panel held in reset → **clock termination never switched on** |
+| Clock lane start (non-continuous) | TLPX 200 ns, **TCLK-PREPARE 128 ns** (programmed 8 UI ≈ 64 ns) | — | D-PHY max 95 ns. P drops before N: polarity correct |
+| D0N | **THS-PREPARE 192 ns** (programmed 16 UI ≈ 128 ns) | — | D-PHY max 135 ns at 120 Mbit/s |
+
+Both prepare times are about one byte clock (8 UI ≈ 64 ns) longer than vc4 programs. The hardware also ignores the lowest 3 bits of the prepare fields (`dsi_hsprep=4` reads back as 0), so only multiples of 8 UI are possible.
+
+**Step 4: prepare fix (patched `vc4`, `dsi_cprep=0 dsi_hsprep=8`).**
+
+| Measurement | Result |
+|---|---|
+| CKP | **52–250 mV, square**: termination now on, matches the TC358870 board |
+| D0N | THS-PREPARE **120 ns**, HS 44–224 mV, clean: terminated |
+| Panel errors, 1 lane | SoT sync gone; packets found but corrupted (`0x9F04`). The panel apparently ignores `BA` and always expects 4 lanes |
+| Panel errors, 2 lanes | `0xBF04`, no false control → D1 fine |
+| Panel errors, 4 lanes | `0x9B44`, **false control**; brief VBAT blip |
+| Back to stock prepare (same boot) | SoT sync errors again (`0x0002`): **the vc4 fix is required** |
+
+**Step 5: D2/D3.** Both D2P (pin 15) and D3P (pin 28) behave like P at the probe point: down at 0 V for ~326 ns, dip from N dropping at ~200 ns, HS-0 low (64–72 mV). D2 is terminated (HS 64/300 mV), but **D3 is not** (~420 mV): the panel doesn't accept the start sequence on D3 although the order at the probe matches the datasheet. So the panel's real pinout on 27/28 must be the reverse of the datasheet.
+
+**Step 6: unpatched carrier board** (original D3 routing, same order as the other pairs), 4 lanes, 120 Mbit/s, prepare fix: **image on the panel**, 0 errors at the debug reads after video starts, power mode `9C`.
+
+Reads during video still sometimes time out or return error-report bytes (for example `00 04` = checksum flag). Not yet clear whether that's real packet errors or the vc4 read path while video runs; to be checked at 60 Hz.
+
+Configuration that works:
+```
+# /boot/firmware/config.txt
+dtoverlay=panel-h497
+# /etc/modprobe.d/panel-h497.conf
+options panel-h497 debug=1 clock_khz=20000 early_power=1 noncont=1 burst=N early_display_on=1
+# /etc/modprobe.d/vc4-dsi.conf (patched vc4 in /lib/modules/$(uname -r)/updates/)
+options vc4 dsi_cprep=0 dsi_hsprep=8
+```
 
 ## Bring-up log (2026-10-03, first panel tests)
 
@@ -83,9 +144,13 @@ TC358870 reference configuration (decoded from the timestamped capture and its d
 - Sequence: init in LP, Sleep Out, 300 ms, Display On, 40 ms, then video.
 - D-PHY counters (18.94 ns each): LPX 3, TCLK-PREPARE 2, TCLK-ZERO 19, TCLK-PRE 2, TCLK-POST 10, TCLK-TRAIL 6, THS-PREPARE 4, THS-ZERO 10, THS-TRAIL 5, THS-EXIT 6.
 
-The stock `vc4` hard-codes pulse mode (`ST_END`), EoT off (`HSDT_EOT_DISABLE`) and LP stop per frame, ignoring the panel driver's mode flags. A patched copy with runtime options is kept in `vc4-patched/` for reference; it is **not installed** (stock `vc4` restored).
+Caveat (2026-10-05): the TC358870 bring-up notes read the same registers differently: `FUNC_MODE` bit 0 as EoTp *disabled*, and `HSYNC_WIDTH 0x7F` (≈ 40 px × 3 + header) as non-burst *sync pulses*. The register layouts aren't public, so neither reading is confirmed. Both variants were tested; the real link structure still needs to be measured at the panel FPC on the TC358870 board.
 
-**Current conclusion:** the panel and the init sequence are fine, and LP signalling works. HS packets from the Pi arrive corrupted at the link level in every configuration, including every protocol and D-PHY timing setting the TC358870 uses. What remains is electrical or deeper in the Pi's PHY, and needs instruments that can see the HS signals, or a known-good DSI display to validate the Pi path.
+Driver 1.13 adds `tc_exact=1`, which replays the board exactly: every init command as a DCS long write followed by the `0x03` spacer, no `53`/`51`, Sleep Out (`11 00`), 300 ms, Display On (`29 00`), 40 ms, then video, with non-burst sync pulses and a continuous clock.
+
+The stock `vc4` hard-codes pulse mode (`ST_END`), EoT off (`HSDT_EOT_DISABLE`) and LP stop per frame, ignoring the panel driver's mode flags. A patched copy with runtime options is kept in `vc4-patched/`. Since 2026-10-05 it is **installed** and also has `dsi_cprep`/`dsi_hsprep` for the prepare times.
+
+**Conclusion of 2026-10-03 (superseded 2026-10-05):** HS packets arrived corrupted in every configuration. The D-PHY timing tests that day only made the prepare times *longer*, which made things worse; the real causes were the too-long prepare times and the D3 swap (see the [2026-10-05 log](#bring-up-log-2026-10-05-root-causes-found)).
 
 **Earlier conclusion (before `noncont`):** the panel receives nothing in high-speed mode. Low-power signalling on lane 0 works, so lane 0 wiring is fine. Suspects, in order: clock lane (CKP/CKN, pins 21/22) polarity or routing, HS signal integrity on the breakout, a break in the clock pair. Check the PCB layout, not just the schematic, since the D3 swap was a routing error.
 
