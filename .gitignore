@@ -22,3 +22,4 @@ vc4-patched/*.ko
 # HAT EEPROM images and backups (built by hat/make-eeprom.sh)
 hat/*.eep
 hat/eeprom-backup-*.bin
+packaging/out/

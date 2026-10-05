@@ -17,7 +17,7 @@ driver is vendored here.
 Install:
 
 ```bash
-V=1.0
+V=1.1
 sudo mkdir -p /usr/src/rmi4-psiopi-$V
 sudo cp rmi4/{Makefile,dkms.conf,*.c,*.h} /usr/src/rmi4-psiopi-$V/
 sudo cp -r rmi4/include /usr/src/rmi4-psiopi-$V/

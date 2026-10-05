@@ -75,6 +75,12 @@ jobs:
           ./compile-overlay.sh panel-h497.dts
           cp panel-h497.dtbo out/
 
+      - name: Build .deb packages
+        run: |
+          packaging/build-debs.sh
+          for d in packaging/out/*.deb; do dpkg-deb -I "$d" | sed -n '/Package:/,/Depends:/p'; done
+          cp packaging/out/*.deb out/
+
       - uses: actions/upload-artifact@v7
         with:
           name: panel-h497-${{ matrix.release }}
