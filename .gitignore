@@ -14,8 +14,6 @@
 
 # Local-only: raw capture and superseded experiments
 i2c-dump.csv
-panel-rm69052.dts
-panel-touch-h497.dts
 
 # Build output of the patched vc4 reference
 vc4-patched/*.o

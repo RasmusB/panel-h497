@@ -29,12 +29,12 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 - [x] **Breakout board power test** (no panel): VDDI and VDD measured correct when on and 0 V when switched off by the driver. HAT EEPROM answers at 0x50 and is empty (all `0xFF`).
 - [x] **First boot with panel on 2 lanes** (`dtoverlay=panel-h497,lanes=2`, set 2026-10-03) because of the prototype's D3 polarity error. Run `./panel-check.sh`.
 - [x] **Then test 4 lanes to see the failure mode.** Done: no difference, see the [bring-up log](#bring-up-log-2026-10-03-first-panel-tests). Expected: TE at about 60 Hz (LP commands only use lane 0), but no or garbled video. If 2 lanes also gives TE but no image, the RM69052 may need its lane count set by a register.
-- [ ] **Next board revision:** route D3 like the other pairs and **ignore the datasheet's pin 27 = D3N / pin 28 = D3P**, which is wrong (proven 2026-10-05: the reworked board fails, the unpatched one works). **HAT EEPROM WP:** the solder jumper from WP to 3.3 V uses a *closed* footprint, so the EEPROM is permanently write-protected (writes fail with data-byte NAKs). Use an open jumper, plus a defined pull-down so WP isn't left floating. Prototype VBAT is fed from 5 V, above the 4.5 V recommended maximum (abs max 5.5 V); production will use the LiPo.
+- [ ] **Next board revision:** route D3 like the other pairs and **ignore the datasheet's pin 27 = D3N / pin 28 = D3P**, which is wrong (proven 2026-10-05: the reworked board fails, the unpatched one works). **HAT EEPROM WP:** the solder jumper from WP to 3.3 V uses a *closed* footprint, so the EEPROM is permanently write-protected (writes fail with data-byte NAKs). Use an open jumper, plus a defined pull-down so WP isn't left floating. **Touch I2C:** SCL and SDA are swapped on the 1.8 V side of the TCA9800 level shifter (between the shifter and panel pins 35/36); the S3402 only answers with the lines swapped. **TP_INT** has no external pull-up; add one (to 1.8 V, the touch side) — the prototype uses the Pi's internal pull-up. Prototype VBAT is fed from 5 V, above the 4.5 V recommended maximum (abs max 5.5 V); production will use the LiPo.
 - [x] **Power-off test** (blank/unblank via `/sys/class/graphics/fb0/blank`): clean since driver 1.14, no errors in `dmesg`.
 - [x] **Program the HAT EEPROM** (2026-10-05): classic v1 format, vendor `RasmusB`, product `PsioPi Mainboard`, ID `0x0001`, version `0x0001` (v0.1), panel overlay embedded (defaults incl. `rotation=270`). Built and flashed with `hat/make-eeprom.sh`. The firmware logs `Loaded HAT overlay`; `config.txt` no longer needs a `dtoverlay=panel-h497` line, and `fbcon=rotate` is gone from `cmdline.txt` (the console follows the overlay's panel orientation). The board's WP jumper had to be cut first (see board revision notes); with WP floating, writes work.
 - [x] **Pushed to GitHub** (https://github.com/RasmusB/panel-h497). CI builds against Raspberry Pi OS bookworm (6.12) and trixie (6.18) kernels for Pi 4 and Pi 5 and passes.
 - [ ] **Optional: bigger console font.** Run `sudo dpkg-reconfigure console-setup` and pick Terminus 16x32.
-- [ ] **Touchscreen (Synaptics S3402) is not done yet.** See [Touchscreen](#touchscreen-not-done).
+- [x] **Touchscreen (Synaptics S3402)** works (2026-10-05): RMI4 driver as the `rmi4-psiopi` DKMS package, touch node in the overlay, landscape coordinates. See [Touchscreen](#touchscreen).
 - [x] ~~After every kernel update, rebuild and reinstall the driver.~~ Now automatic through DKMS. Just check `dkms status` after a kernel upgrade (see [Kernel updates](#kernel-updates)).
 - [x] **Clean up** (2026-10-05): removed `dtdebug=1` from `config.txt`, the old `panel-rm69052` overlay (`/boot/firmware/overlays/` and the local `.dts`/`.dtbo`), and the bring-up backups of `config.txt` and the module options (the two original backups from 2026-10-01 are kept).
 - [ ] **Optional: submit the driver to mainline Linux** as `panel-raydium-rm69052.c`, with a YAML devicetree binding.
@@ -242,7 +242,7 @@ All in `~/workspace/dts/`:
 | `hat/eeprom_settings.txt` / `hat/make-eeprom.sh` | HAT ID EEPROM contents for the PsioPi mainboard, and the script that builds (and with `--flash` writes and verifies) the image with the overlay embedded. |
 | `vc4-patched/` | Copy of the Raspberry Pi `vc4` driver (6.6.31) with bring-up options (`dsi_cprep`/`dsi_hsprep`, EoT, sync mode, blanking). Not installed; only needed for low bit rates. |
 | `i2c-dump.csv` | Raw I2C capture from the TC358870 board (local only, not in git). |
-| `panel-touch-h497.dts` | Earlier overlay with the touchscreen node. Reference only. |
+| `rmi4/` | Synaptics RMI4 touch driver (vendored upstream, DKMS package `rmi4-psiopi`). |
 
 ## How the driver works
 
@@ -393,14 +393,27 @@ sudo cp ~/workspace/dts/driver/{panel-h497.c,Makefile,dkms.conf} /usr/src/panel-
 sudo dkms install panel-h497/$V
 ```
 
-## Touchscreen (not done)
+## Touchscreen
 
-The S3402 touch controller is supported by the kernel's RMI4 drivers (`syna,rmi4-i2c`). The datasheet gives I2C address **0x20**. The draft node in `panel-touch-h497.dts` assumes:
-- the `i2c_csi_dsi` bus;
-- TP_INT on GPIO 25 (falling edge);
-- TP_RESX on GPIO 24.
+Wiring (PsioPi prototype): the CM4 IO board's DSI connector I2C (GPIO 44/45, `i2c_csi_dsi`) → TCA9800 level shifter → panel pins 35/36. TP_INT on GPIO 25, TP_RESX on GPIO 24 (active low, 1.8 V via divider). Touch supplies are the panel rails (VDD 3.3 V on the prototype, VDDI 1.8 V, switched by GPIO 23/18).
 
-Those pins haven't been checked against the carrier schematic. The node also needs the TP_VCC (3.1 V) and TP_VDDI (1.8 V) supplies to be on.
+Bring-up 2026-10-05:
+- The Raspberry Pi kernel has **no RMI4 driver** (`# CONFIG_RMI4_CORE is not set`, and `include/linux/rmi.h` is not in the headers), so it has to come as a DKMS module.
+- With hardware I2C on GPIO 44/45 nothing answers at 0x20 (only the IO board's 0x2f and 0x51), with RESX released and the supplies on. TP_INT sat at 18 mV even with the Pi's pull-up.
+- Measured at the panel connector: TP_VCC 3.284 V, TP_VDDI 1.800 V, RESX 1.8 V, TCA9800 supplies and EN as expected.
+- A bit-banged bus with the lines swapped (`dtoverlay i2c-gpio i2c_gpio_sda=45 i2c_gpio_scl=44 bus=11`) finds the controller at **0x20**: **SCL/SDA are swapped on the 1.8 V side of the TCA9800** (board routing).
+- RMI4 identification: manufacturer 0x01 (Synaptics), product **`S3402BR`**. Page Description Table (page 0): **F34** at 0xE9 (flash), **F01** at 0xE3 (query base 0x24), **F12** at 0xDD (2D sensor). TP_INT low is the controller's ATTN request, not a fault.
+- TP_INT needs a pull-up; none on the board, the Pi's internal one is used for now.
+- After swapping SCL/SDA on the board (rework), the controller answers on the hardware bus.
+
+Solution:
+- **Driver:** `rmi4/` vendors the upstream RMI4 driver (core, F01, 2D sensor, F12, I2C transport) from `raspberrypi/linux` `rpi-6.12.y` and builds it with DKMS as `rmi4-psiopi`. One addition in `rmi_i2c.c`: optional `reset-gpios`, held while the supplies come up and asserted again before they go off. See `rmi4/README.md`.
+- **Overlay** (`panel-h497.dts`, parameter `touch`, default on): enables `i2c0if`/`i2c0mux`, puts `touchscreen@20` (`syna,rmi4-i2c`) on `i2c_csi_dsi` with IRQ GPIO 25 (level low, Pi pull-up), reset GPIO 24, `vdd`/`vio` from the panel regulators, F01 (`syna,nosleep-mode`) and F12 nodes.
+- **Shared rails:** `panel_vdd` has `vin-supply = <&panel_vddi>`, so VDD never comes up before VDDI. The touch driver keeps both rails enabled while bound; when the screen blanks, only the panel driver drops its references (checked in `regulator_summary`: users 3/2 → 2/1 → 3/2) and the touch stays powered.
+- **Orientation:** the raw axes are portrait (720 × 1280). With `rotation=270`, landscape top left/top right/bottom right/bottom left gave raw (117,1162), (119,101), (671,141), (614,1186). `touchscreen-inverted-y` + `touchscreen-swapped-x-y` in the F12 node (the driver inverts before swapping) give 1280 × 720 with origin top left: (149,136), (1162,127), (1139,605), (144,629).
+- dmesg: `rmi4_f01 ... found RMI device, manufacturer: Synaptics, product: S3402BR, fw id: 1460222`, input device `Synaptics S3402BR`.
+- Not tested yet: a desktop session (compositors map touch to the output themselves).
+- **In the EEPROM** (2026-10-05): the overlay with touch (image 4,004 bytes) was flashed with `hat/make-eeprom.sh --flash`; after a reboot without any panel lines in `config.txt`, the firmware loads the HAT overlay and both panel and touch come up. `eepflash.sh` (raspi-utils 20240402) no longer works on kernel 6.12 (it uses `/sys/class/i2c-adapter`, which is gone), so the script now drives the at24 driver through `/sys/bus/i2c/devices/` itself, on `i2c-0` (the i2c0 mux channel on GPIO 0/1, present once the touch overlay enables the mux).
 
 ## Undo everything
 

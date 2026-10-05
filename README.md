@@ -53,6 +53,7 @@ Set `display_auto_detect=0` in the same file, then reboot.
 | `reset_gpio=<n>` | `27` | Panel reset (RESX), active low |
 | `vddi_gpio=<n>` | `18` | Enable for the 1.8 V VDDI regulator |
 | `vdd_gpio=<n>` | `23` | Enable for the 3.1 V VDD regulator |
+| `touch` | on | Synaptics S3402 touch controller; `touch=off` to leave it out |
 
 Example: `dtoverlay=panel-h497,lanes=2,rotation=90,reset_gpio=5`
 
@@ -73,6 +74,20 @@ Check after a reboot:
 cat /proc/device-tree/hat/vendor /proc/device-tree/hat/product; echo
 sudo vclog -m | grep -i hat
 ```
+
+## Touchscreen
+
+The panel's Synaptics S3402 touch controller uses the kernel's RMI4 driver, which the Raspberry Pi kernel doesn't include. `rmi4/` builds it as a DKMS package:
+
+```bash
+V=1.0
+sudo mkdir -p /usr/src/rmi4-psiopi-$V
+sudo cp rmi4/{Makefile,dkms.conf,*.c,*.h} /usr/src/rmi4-psiopi-$V/
+sudo cp -r rmi4/include /usr/src/rmi4-psiopi-$V/
+sudo dkms install rmi4-psiopi/$V
+```
+
+The overlay adds the touch node (I2C on GPIO 44/45 at 0x20, INT GPIO 25, reset GPIO 24) and reports landscape coordinates (1280 × 720) to match `rotation=270`. Use `touch=off` to leave it out.
 
 ## Brightness
 
