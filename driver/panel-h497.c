@@ -105,6 +105,28 @@ static inline struct h497 *to_h497(struct drm_panel *panel)
 }
 
 /*
+ * Send a DCS command while video may be running. vc4 has to fit low-power
+ * commands into the video stream and gives up after 500 ms with -ETIMEDOUT,
+ * which happens to a few percent of commands (about 7 % measured), so retry.
+ */
+#define H497_VIDEO_CMD_TRIES 3
+
+static ssize_t h497_dcs_write_video(struct h497 *ctx, u8 cmd,
+				    const void *data, size_t len)
+{
+	ssize_t ret;
+	int i;
+
+	for (i = 0; i < H497_VIDEO_CMD_TRIES; i++) {
+		ret = mipi_dsi_dcs_write(ctx->dsi, cmd, data, len);
+		if (ret != -ETIMEDOUT)
+			break;
+	}
+
+	return ret;
+}
+
+/*
  * Each entry: length, then <length> bytes (DCS command + parameters).
  * Sent as DCS writes (0x15 for 1 parameter, 0x39 otherwise), in LP mode.
  */
@@ -687,7 +709,7 @@ static int h497_enable(struct drm_panel *panel)
 	}
 
 	if (!ctx->display_on_sent) {
-		ret = mipi_dsi_dcs_set_display_on(ctx->dsi);
+		ret = h497_dcs_write_video(ctx, MIPI_DCS_SET_DISPLAY_ON, NULL, 0);
 		if (ret < 0) {
 			dev_err(&ctx->dsi->dev, "display on failed: %d\n", ret);
 			return ret;
@@ -711,11 +733,11 @@ static int h497_disable(struct drm_panel *panel)
 
 	ctx->prepared = false;
 
-	ret = mipi_dsi_dcs_set_display_off(ctx->dsi);
+	ret = h497_dcs_write_video(ctx, MIPI_DCS_SET_DISPLAY_OFF, NULL, 0);
 	if (ret < 0)
 		dev_warn(&ctx->dsi->dev, "display off failed: %d\n", ret);
 
-	ret = mipi_dsi_dcs_enter_sleep_mode(ctx->dsi);
+	ret = h497_dcs_write_video(ctx, MIPI_DCS_ENTER_SLEEP_MODE, NULL, 0);
 	if (ret < 0)
 		dev_warn(&ctx->dsi->dev, "sleep in failed: %d\n", ret);
 	/* Panel needs 120 ms in Sleep In before power can be removed */
@@ -797,8 +819,8 @@ static int h497_bl_update_status(struct backlight_device *bl)
 		return 0;
 
 	/* One-byte form; the kernel helper sends a 16-bit value */
-	ret = mipi_dsi_dcs_write(ctx->dsi, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
-				 &level, 1);
+	ret = h497_dcs_write_video(ctx, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
+				   &level, 1);
 	if (ret < 0)
 		return ret;
 
