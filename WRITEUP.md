@@ -36,9 +36,7 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 - [ ] **Optional: bigger console font.** Run `sudo dpkg-reconfigure console-setup` and pick Terminus 16x32.
 - [ ] **Touchscreen (Synaptics S3402) is not done yet.** See [Touchscreen](#touchscreen-not-done).
 - [x] ~~After every kernel update, rebuild and reinstall the driver.~~ Now automatic through DKMS. Just check `dkms status` after a kernel upgrade (see [Kernel updates](#kernel-updates)).
-- [ ] **Clean up** once everything works:
-  - Remove `dtdebug=1` from `config.txt`.
-  - Delete `/boot/firmware/overlays/panel-rm69052.dtbo` and the old `panel-rm69052.dts`.
+- [x] **Clean up** (2026-10-05): removed `dtdebug=1` from `config.txt`, the old `panel-rm69052` overlay (`/boot/firmware/overlays/` and the local `.dts`/`.dtbo`), and the bring-up backups of `config.txt` and the module options (the two original backups from 2026-10-01 are kept).
 - [ ] **Optional: submit the driver to mainline Linux** as `panel-raydium-rm69052.c`, with a YAML devicetree binding.
 
 ---
@@ -243,7 +241,6 @@ All in `~/workspace/dts/`:
 | `compile-overlay.sh` | Compiles a `.dts` into a `.dtbo`, running the preprocessor for `#include`s, and prints install instructions. |
 | `i2c-dump.csv` | Raw I2C capture from the TC358870 board. |
 | `panel-touch-h497.dts` | Earlier overlay with the touchscreen node. Reference only. |
-| `panel-rm69052.dts` / `.dtbo` | First, broken attempt. Can be deleted. |
 
 ## How the driver works
 
