@@ -1,4 +1,4 @@
-# Builds the driver against current Raspberry Pi OS kernels and compiles the
+# Builds the panel and touch drivers against current Raspberry Pi OS kernels and compiles the
 # overlay. Runs on every push/PR and weekly, so a new Raspberry Pi kernel that
 # breaks the build is caught before customers hit it.
 name: build
@@ -43,26 +43,31 @@ jobs:
             gcc make cpp device-tree-compiler kmod perl python3 \
             linux-headers-rpi-v8 linux-headers-rpi-2712
 
-      - name: Build driver for each kernel
+      - name: Build drivers for each kernel
         run: |
           # Report the tail of a failed build as an annotation, which is
           # visible on the run page without opening the full log.
           annotate() {
             echo "::error title=$1::$(tail -40 "$2" | sed -e 's/%/%25/g' | sed -e ':a;N;$!ba;s/\n/%0A/g')"
           }
+          # driver/: panel driver (W=1). rmi4/: vendored upstream touch driver,
+          # built with the kernel's normal warnings.
           for kdir in /usr/src/linux-headers-*-rpi-v8 /usr/src/linux-headers-*-rpi-2712; do
             kver=$(basename "$kdir" | sed 's/^linux-headers-//')
-            echo "::group::$kver"
-            if ! { make -C "$kdir" M="$PWD/driver" clean &&
-                   make -C "$kdir" M="$PWD/driver" W=1 modules; } > build.log 2>&1; then
-              cat build.log; echo "::endgroup::"
-              annotate "build failed: $kver" build.log
-              exit 1
-            fi
-            cat build.log
-            modinfo driver/panel-h497.ko | grep -E 'vermagic|alias'
-            mkdir -p out/$kver && cp driver/panel-h497.ko out/$kver/
-            echo "::endgroup::"
+            for mod in driver rmi4; do
+              w=; [ "$mod" = driver ] && w=W=1
+              echo "::group::$kver $mod"
+              if ! { make -C "$kdir" M="$PWD/$mod" clean &&
+                     make -C "$kdir" M="$PWD/$mod" $w modules; } > build.log 2>&1; then
+                cat build.log; echo "::endgroup::"
+                annotate "build failed: $kver $mod" build.log
+                exit 1
+              fi
+              cat build.log
+              for ko in "$mod"/*.ko; do modinfo "$ko" | grep -E 'vermagic|alias'; done
+              mkdir -p out/$kver && cp "$mod"/*.ko out/$kver/
+              echo "::endgroup::"
+            done
           done
 
       - name: Compile overlay
