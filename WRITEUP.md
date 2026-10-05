@@ -19,18 +19,18 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 - [ ] **Reads during video are unreliable** on vc4 (timeouts, wrong values); writes mostly work. Only matters for debugging.
 - [ ] **Remove the VBAT runaway risk:** the grey "runaway" seen on 2026-10-03 happened with corrupted video. Confirm VBAT current stays sane with real images at full brightness.
 - [x] **Connect the breakout board** with the Pi powered off, then power on.
-- [ ] **Check for an image.** The screen is black for about 6 s, then boot text and the login prompt appear, in landscape.
-- [ ] **If the screen stays dark,** collect `dmesg | grep -iE 'h497|dsi'` and note whether the panel glows or flickers at all.
-- [ ] **If the image rolls, tears or flickers,** try non-burst mode (see [Tuning](#tuning)), then adjust the timings if needed.
-- [ ] **Check brightness control:** `echo 50 > /sys/class/backlight/panel-h497/brightness` should visibly dim the panel. If it doesn't, the RM69052 needs a manufacturer-specific brightness register instead of the standard `0x51`.
-- [ ] **Check the console direction.** If text is upside down, change `fbcon=rotate:1` to `rotate:3` in `/boot/firmware/cmdline.txt`.
-- [ ] **Try overlay rotation instead of `fbcon=rotate`.** Remove `fbcon=rotate:1` from `cmdline.txt` and use `dtoverlay=panel-h497,rotation=90` (or `270`). This also tells desktops which way the panel is mounted. Check which value gives the right direction.
+- [x] **Image** (2026-10-05): boot text and login prompt, landscape, 60 Hz.
+- [x] **Brightness control:** the standard DCS `0x51` works; `/sys/class/backlight/panel-h497` dims the panel.
+- [x] **Rotation** only through the overlay (`rotation=270`, the default); `fbcon=rotate` removed from `cmdline.txt`. Console and desktops follow the DRM panel orientation.
+- [x] **Kernel update** (2026-10-05): `apt full-upgrade` from 6.6.31 to 6.12.109. DKMS rebuilt the driver for both kernels (`rpi-v8` and `rpi-2712`) during the upgrade; after reboot image, HAT overlay, rotation, brightness and blank/unblank all work, no DSI errors.
+- [ ] **Remove the 6.6.31 fallback** once 6.12 has run for a few days: `/boot/firmware/kernel8-6.6.31.img`, `initramfs8-6.6.31`, `/root/kernel-fallback-6.6.31/`. To boot it instead, add `kernel=kernel8-6.6.31.img` and `initramfs initramfs8-6.6.31 followkernel` to `config.txt`.
+- [ ] **Optional: remove leftover module folders** in `/lib/modules/` from earlier custom kernels (`6.1.21-v8+`, `6.6.45-v8*`, `6.6.47-v8*`), and the old `/boot/firmware/kernel8-backup.img` (2024-08), if nothing uses them.
 - [x] **Installed driver 1.2 and the new overlay** (lanes/pins/rotation parameters) on the Pi.
 - [x] **Breakout board power test** (no panel): VDDI and VDD measured correct when on and 0 V when switched off by the driver. HAT EEPROM answers at 0x50 and is empty (all `0xFF`).
 - [x] **First boot with panel on 2 lanes** (`dtoverlay=panel-h497,lanes=2`, set 2026-10-03) because of the prototype's D3 polarity error. Run `./panel-check.sh`.
 - [x] **Then test 4 lanes to see the failure mode.** Done: no difference, see the [bring-up log](#bring-up-log-2026-10-03-first-panel-tests). Expected: TE at about 60 Hz (LP commands only use lane 0), but no or garbled video. If 2 lanes also gives TE but no image, the RM69052 may need its lane count set by a register.
 - [ ] **Next board revision:** route D3 like the other pairs and **ignore the datasheet's pin 27 = D3N / pin 28 = D3P**, which is wrong (proven 2026-10-05: the reworked board fails, the unpatched one works). **HAT EEPROM WP:** the solder jumper from WP to 3.3 V uses a *closed* footprint, so the EEPROM is permanently write-protected (writes fail with data-byte NAKs). Use an open jumper, plus a defined pull-down so WP isn't left floating. Prototype VBAT is fed from 5 V, above the 4.5 V recommended maximum (abs max 5.5 V); production will use the LiPo.
-- [ ] **Reboot into driver 1.2** and re-run the power-off test: `echo 4 | sudo tee /sys/class/graphics/fb0/blank`, then `echo 0 | ...`. `dmesg` should show no `sleep in failed`.
+- [x] **Power-off test** (blank/unblank via `/sys/class/graphics/fb0/blank`): clean since driver 1.14, no errors in `dmesg`.
 - [x] **Program the HAT EEPROM** (2026-10-05): classic v1 format, vendor `RasmusB`, product `PsioPi Mainboard`, ID `0x0001`, version `0x0001` (v0.1), panel overlay embedded (defaults incl. `rotation=270`). Built and flashed with `hat/make-eeprom.sh`. The firmware logs `Loaded HAT overlay`; `config.txt` no longer needs a `dtoverlay=panel-h497` line, and `fbcon=rotate` is gone from `cmdline.txt` (the console follows the overlay's panel orientation). The board's WP jumper had to be cut first (see board revision notes); with WP floating, writes work.
 - [x] **Pushed to GitHub** (https://github.com/RasmusB/panel-h497). CI builds against Raspberry Pi OS bookworm (6.12) and trixie (6.18) kernels for Pi 4 and Pi 5 and passes.
 - [ ] **Optional: bigger console font.** Run `sudo dpkg-reconfigure console-setup` and pick Terminus 16x32.
@@ -233,22 +233,24 @@ All in `~/workspace/dts/`:
 |---|---|
 | `driver/panel-h497.c` | The DRM panel driver (kernel module). |
 | `driver/Makefile` | Builds the module against the installed kernel headers, for quick test builds. Installing is done through DKMS. |
-| `driver/dkms.conf` | DKMS package definition (`panel-h497` version 1.0). |
+| `driver/dkms.conf` | DKMS package definition (`panel-h497`, current version in `PACKAGE_VERSION`, 1.14 as of 2026-10-05). |
 | `panel-h497.dts` / `.dtbo` | Device tree overlay, display only, with parameters (see [Overlay parameters](#overlay-parameters)). |
 | `README.md` | Customer-facing install and usage instructions. |
 | `LICENSE` | GPL-2.0 |
 | `.github/workflows/build.yml` | CI: builds the driver against the current Raspberry Pi OS kernels (bookworm and trixie; Pi 4 and Pi 5 kernels) and compiles the overlay, on every push and weekly. |
 | `compile-overlay.sh` | Compiles a `.dts` into a `.dtbo`, running the preprocessor for `#include`s, and prints install instructions. |
-| `i2c-dump.csv` | Raw I2C capture from the TC358870 board. |
+| `hat/eeprom_settings.txt` / `hat/make-eeprom.sh` | HAT ID EEPROM contents for the PsioPi mainboard, and the script that builds (and with `--flash` writes and verifies) the image with the overlay embedded. |
+| `vc4-patched/` | Copy of the Raspberry Pi `vc4` driver (6.6.31) with bring-up options (`dsi_cprep`/`dsi_hsprep`, EoT, sync mode, blanking). Not installed; only needed for low bit rates. |
+| `i2c-dump.csv` | Raw I2C capture from the TC358870 board (local only, not in git). |
 | `panel-touch-h497.dts` | Earlier overlay with the touchscreen node. Reference only. |
 
 ## How the driver works
 
 The Pi's graphics driver (vc4) generates the video signal. The panel driver tells it how to power, configure and describe the panel. The kernel connects the two through the overlay's `compatible = "auo,h497tlb01"`.
 
-- **`probe()`** runs at boot. It gets the two regulators and the reset GPIO, holding the panel in reset from the start. It sets up DSI: 4 lanes, RGB888, video mode with burst, commands in low-power mode. It sets `prepare_prev_first`, so the DSI link is up before commands are sent. Finally it registers the panel and the brightness device.
+- **`probe()`** runs at boot. It gets the two regulators and the reset GPIO, holding the panel in reset from the start. It sets up DSI: 4 lanes, RGB888, video mode with burst, **non-continuous clock**, commands in low-power mode. It sets `prepare_prev_first`, so the DSI link is up before commands are sent. With `early_power` (default) it already powers and resets the panel here, so the panel is awake when the Pi starts the clock lane. Finally it registers the panel and the brightness device.
 - **`get_modes()`** reports 720×1280 at 66.9 MHz with the EDID timings, and a physical size of 62 × 110 mm.
-- **`prepare()`** runs the power-on sequence from the datasheet:
+- **`prepare()`** runs the power-on sequence from the datasheet (skipping steps 1–5 if `early_power` already did them at probe):
   1. Hold reset.
   2. Turn on VDDI, then VDD.
   3. Wait 40 ms.
@@ -257,10 +259,12 @@ The Pi's graphics driver (vc4) generates the video signal. The panel driver tell
   6. Send the init table.
   7. Send `35 00` (TE on) and `53 20` (brightness control on).
   8. Send Sleep Out (`0x11`) and wait 120 ms.
-- **`enable()`** sends Display On (`0x29`) once video is already streaming.
+  9. Send the current backlight level (`0x51`).
+  10. With `early_display_on` (default): wait 180 ms, send Display On (`0x29`), wait 40 ms. Everything goes out before video starts, because low-power commands during video are unreliable on vc4.
+- **`enable()`** only sends Display On if `early_display_on` is off.
 - **`disable()`** sends Display Off and Sleep In, then waits 120 ms, while the DSI link is still up.
 - **`unprepare()`** asserts reset and turns off VDD, then VDDI. It sends no commands: because of `prepare_prev_first`, the DSI controller is already off by the time it runs. Driver 1.1 sent Sleep In here, which timed out.
-- **Brightness** is a backlight device at `/sys/class/backlight/panel-h497`, range 0–255. Changes are sent as DCS `0x51 <value>`. Changes made while the panel is off are saved and applied when it powers on.
+- **Brightness** is a backlight device at `/sys/class/backlight/panel-h497`, range 0–255 (128 until systemd restores the saved value). Changes are sent as DCS `0x51 <value>`. Changes made while the panel is off are saved and applied when it powers on. The brightness-to-0 command the backlight core sends when blanking is skipped: it timed out during video, and Display Off follows anyway.
 - **Module parameters** let you tune timings without rebuilding (see below).
 
 ### Init sequence (from the I2C capture)
@@ -282,28 +286,26 @@ Common: 35 00 (TE on) | 53 20 (brightness ctrl, added) | 11 (Sleep Out) | 29 (Di
 | What | Where | Backup |
 |---|---|---|
 | `dkms` package (installed with `--no-install-recommends`) | apt | n/a |
-| Driver source registered with DKMS | `/usr/src/panel-h497-1.0/` | none (new) |
-| Kernel module, built by DKMS | `/lib/modules/6.6.31+rpt-rpi-v8/updates/dkms/panel-h497.ko.xz` | none (new file) |
-| Overlay | `/boot/firmware/overlays/panel-h497.dtbo` | none (new file) |
-| Removed `dtoverlay=panel-rm69052`, added `dtoverlay=panel-h497` after `dtoverlay=vc4-kms-v3d`; `display_auto_detect=0` (was already set) | `/boot/firmware/config.txt` | `config.txt.bak-202610012156` |
-| Landscape console: `fbcon=rotate:1` | `/boot/firmware/cmdline.txt` | `cmdline.txt.bak-202610012219` |
+| Driver source registered with DKMS | `/usr/src/panel-h497-1.14/` | none (new) |
+| Kernel module, built by DKMS | `/lib/modules/<kernel>/updates/dkms/panel-h497.ko.xz` (6.6.31, 6.12.109 v8 and 2712) | none (new file) |
+| Overlay | Embedded in the board's HAT EEPROM; also installed as `/boot/firmware/overlays/panel-h497.dtbo` (older build, default rotation 0, unused) | none |
+| Removed `dtoverlay=panel-rm69052`; no panel `dtoverlay` line any more (the HAT overlay replaces it); `dtdebug=1` removed; `display_auto_detect=0` (was already set) | `/boot/firmware/config.txt` | `config.txt.bak-202610012156` (original) |
+| `fbcon=rotate:1` added on 2026-10-01, removed again on 2026-10-05 | `/boot/firmware/cmdline.txt` | `cmdline.txt.bak-202610012219` (original) |
+| `apt full-upgrade`, kernel 6.6.31 → 6.12.109 (2026-10-05) | apt | 6.6.31 fallback: `kernel8-6.6.31.img`, `initramfs8-6.6.31`, `/root/kernel-fallback-6.6.31/` |
 
 No udev rule was needed for brightness. The existing `/lib/udev/rules.d/60-backlight.rules` already makes `brightness` writable by the `video` group, and the user is in that group. systemd also saves and restores the brightness across reboots.
 
-## Verified so far (without the panel)
+## Verified on hardware (2026-10-05, kernel 6.12.109, driver 1.14)
 
 | Check | Result |
 |---|---|
-| Overlay applied (`sudo vclog -m \| grep -i dt`) | Loaded, no `dterror` |
-| DSI device | `fe700000.dsi.0` exists, `panel_h497` bound |
-| vc4 | `bound fe700000.dsi` |
-| `/sys/class/drm/card1-DSI-1` | `connected`, `enabled`, mode `720x1280` |
-| Regulators and GPIOs | `panel_vddi` and `panel_vdd` on; GPIO 18, 23 and 27 high; GPIO 22 input |
-| Driver errors in `dmesg` | None |
-| Brightness | `/sys/class/backlight/panel-h497` present; writes work without sudo |
-| Console | 160×45 characters, rotated |
-
-Without a panel attached, successful commands prove nothing. They are sent in low-power mode without waiting for a reply.
+| HAT EEPROM | `/proc/device-tree/hat/product` = `PsioPi Mainboard`; firmware log `Loaded HAT overlay` |
+| Driver | loaded from `/lib/modules/6.12.109+rpt-rpi-v8/updates/dkms/`, no module options |
+| vc4 | stock module, `bound fe700000.dsi` |
+| `/sys/class/drm/card1-DSI-1` | `connected`, `enabled`, `720x1280` at 60 Hz |
+| Image | correct, landscape (`fbcon` rotation 3 from the overlay's `rotation=270`) |
+| Brightness | `/sys/class/backlight/panel-h497`, writes work without sudo |
+| Blank/unblank | image returns at the stored brightness, no errors in `dmesg` |
 
 ## Overlay parameters
 
@@ -313,18 +315,20 @@ From driver 1.1. The driver reads `dsi-lanes` (default 4) and the standard `rota
 |---|---|---|
 | `dsi0` | off (DSI1) | Use the DSI0 port |
 | `lanes=<n>` | `4` | DSI data lanes, 1–4. Pi 4B display connector: `2` |
-| `rotation=<deg>` | `0` | Mounting rotation `0`/`90`/`180`/`270`. Sets the DRM panel orientation, which the console and desktops follow. |
+| `rotation=<deg>` | `270` | Mounting rotation `0`/`90`/`180`/`270`. Sets the DRM panel orientation, which the console and desktops follow. `270` is landscape as mounted in the PsioPi (`90` turns it upside down). |
 | `reset_gpio=<n>` | `27` | RESX, active low |
 | `vddi_gpio=<n>` | `18` | VDDI 1.8 V LDO enable |
 | `vdd_gpio=<n>` | `23` | VDD 3.1 V LDO enable |
 
-Verified by merging the overlay into `bcm2711-rpi-cm4.dtb` with `dtmerge`, with and without each parameter.
+Verified by merging the overlay into `bcm2711-rpi-cm4.dtb` with `dtmerge`, with and without each parameter. On the PsioPi the overlay comes from the HAT EEPROM with its defaults; parameters only apply when it's loaded with `dtoverlay=panel-h497,...` instead.
 
 Bandwidth note: 720×1280 at 60 Hz in RGB888 needs about 1.6 Gbit/s, so roughly 800 Mbit/s per lane on 2 lanes. That's near the Pi 4's DSI limit. If 2 lanes is unstable, lower `clock_khz` for a lower refresh rate.
 
 ## Tuning
 
 Module parameters, set in `/etc/modprobe.d/panel-h497.conf`, then reboot:
+
+None are needed on the PsioPi; the defaults are the verified configuration.
 
 ```
 options panel-h497 burst=N
@@ -333,7 +337,13 @@ options panel-h497 clock_khz=66900 hfp=60 hsync=40 hbp=35 vfp=8 vsync=8 vbp=8
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `burst` | `Y` | `N` switches to non-burst mode with sync pulses. Try this first if the image is unstable. |
+| `burst` | `Y` | `N` switches to non-burst mode with sync pulses. Both work. |
+| `noncont` | `Y` | Non-continuous clock. With a continuous clock the panel misses the clock start after blank/unblank. |
+| `early_power` | `Y` | Power and reset the panel at probe, before the Pi starts the clock lane. |
+| `early_display_on` | `Y` | Send Display On before video starts. |
+| `init_brightness` | `-1` | Brightness sent before video; `-1` = current backlight level. |
+| `debug` | `N` | Read back ID, power mode and error count during power-up (reads during video time out). |
+| `tc_exact`, `late_init`, `no_eot`, `lane_reg`, `init_set` | off | Bring-up experiments; see the bring-up logs. |
 | `clock_khz` | 66900 | Pixel clock |
 | `hfp` / `hsync` / `hbp` | 60 / 40 / 35 | Horizontal front porch / sync / back porch |
 | `vfp` / `vsync` / `vbp` | 8 / 8 / 8 | Vertical front porch / sync / back porch |
@@ -362,20 +372,22 @@ echo 128 > /sys/class/backlight/panel-h497/brightness
 
 The driver is an **out-of-tree module**, which has to be compiled for each exact kernel version. **DKMS** does this automatically: when `apt` installs a new kernel, the `/etc/kernel/postinst.d/dkms` hook rebuilds and installs the driver for it. The matching headers come with the new kernel through the `linux-headers-rpi-v8` package.
 
+Verified on 2026-10-05 with `apt full-upgrade` from 6.6.31 to 6.12.109: DKMS built and signed the module for both new kernels (`rpi-v8` and `rpi-2712`) during the upgrade, and the panel worked after the reboot without any manual step.
+
 After a kernel upgrade, before rebooting, confirm the new kernel shows `installed`:
 
 ```bash
 dkms status
-# panel-h497/1.0, <new-kernel-version>, aarch64: installed
+# panel-h497/1.14, <new-kernel-version>, aarch64: installed
 ```
 
-If the build failed, for example because a future kernel changed the display API, the panel stays dark until the driver is fixed. The log is in `/var/lib/dkms/panel-h497/1.0/build/make.log`.
+If the build failed, for example because a future kernel changed the display API, the panel stays dark until the driver is fixed. The log is in `/var/lib/dkms/panel-h497/<version>/build/make.log`. CI builds the driver weekly against the current Raspberry Pi OS kernels, so API breaks should show up there first.
 
-**Changing the driver:** DKMS builds from its own copy in `/usr/src/panel-h497-1.0/`, not from `~/workspace/dts/driver/`. After editing the driver, bump `PACKAGE_VERSION` in `dkms.conf`, then:
+**Changing the driver:** DKMS builds from its own copy in `/usr/src/panel-h497-<version>/`, not from `~/workspace/dts/driver/`. After editing the driver, bump `PACKAGE_VERSION` in `dkms.conf`, then:
 
 ```bash
-V=1.1   # new version
-sudo dkms remove panel-h497/1.0 --all
+OLD=1.14; V=1.15   # installed and new version
+sudo dkms remove panel-h497/$OLD --all
 sudo mkdir -p /usr/src/panel-h497-$V
 sudo cp ~/workspace/dts/driver/{panel-h497.c,Makefile,dkms.conf} /usr/src/panel-h497-$V/
 sudo dkms install panel-h497/$V
@@ -392,12 +404,12 @@ Those pins haven't been checked against the carrier schematic. The node also nee
 
 ## Undo everything
 
-1. In `/boot/firmware/config.txt`, remove `dtoverlay=panel-h497`, or restore `config.txt.bak-202610012156`.
-2. In `/boot/firmware/cmdline.txt`, remove ` fbcon=rotate:1`, or restore `cmdline.txt.bak-202610012219`.
+1. Stop the firmware from applying the HAT overlay: add `force_eeprom_read=0` to `/boot/firmware/config.txt` (or erase the EEPROM). If a `dtoverlay=panel-h497` line was added by hand, remove it.
+2. `cmdline.txt` no longer has panel changes. The original is `cmdline.txt.bak-202610012219`.
 3. Remove the driver and the overlay:
    ```bash
-   sudo dkms remove panel-h497/1.0 --all
-   sudo rm -r /usr/src/panel-h497-1.0
+   sudo dkms remove panel-h497/1.14 --all
+   sudo rm -r /usr/src/panel-h497-1.14
    sudo rm /boot/firmware/overlays/panel-h497.dtbo
    ```
 4. Reboot.
