@@ -3,7 +3,7 @@
 Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Raydium **RM69052** driver IC), connected over MIPI DSI to a Compute Module 4 (DSI1, 4 lanes).
 
 **Status (2026-10-05): the panel works directly on the CM4's DSI1 at 720×1280, 60 Hz, 4 lanes, with the stock `vc4` driver.** Driver 1.14 needs no module options; blank/unblank and brightness work. Two faults were found (see the [bring-up log](#bring-up-log-2026-10-05-root-causes-found)):
-1. **The datasheet's D3 pinout is wrong.** Pins 27/28 are in the same order as the other pairs (P before N), not reversed. The prototype's D3 rework, done to match the datasheet, introduced the swap; the unpatched carrier board is correct. **This was the fault that blocked 60 Hz.**
+1. **Datasheet v0.2's D3 pinout is wrong.** Pins 27/28 are in the same order as the other pairs (P before N), not reversed. AUO corrected this in datasheet rev 0.6 (2014-01-08); see [Datasheet v1.8](#datasheet-v18-2015). The prototype's D3 rework, done to match the datasheet, introduced the swap; the unpatched carrier board is correct. **This was the fault that blocked 60 Hz.**
 2. **The Pi's D-PHY prepare times are too long at low bit rates.** The hardware adds one byte clock (8 UI) to the value vc4 programs. At 120 Mbit/s that puts TCLK-/THS-PREPARE out of spec (the panel can't sync); at 60 Hz (429 Mbit/s) the stock values land inside the window. Only matters for low refresh rates; the patched `vc4` in `vc4-patched/` (`dsi_cprep`/`dsi_hsprep`) fixes it. Worth reporting to Raspberry Pi.
 
 ---
@@ -31,7 +31,7 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 - [x] **Breakout board power test** (no panel): VDDI and VDD measured correct when on and 0 V when switched off by the driver. HAT EEPROM answers at 0x50 and is empty (all `0xFF`).
 - [x] **First boot with panel on 2 lanes** (`dtoverlay=panel-h497,lanes=2`, set 2026-10-03) because of the prototype's D3 polarity error. Run `./panel-check.sh`.
 - [x] **Then test 4 lanes to see the failure mode.** Done: no difference, see the [bring-up log](#bring-up-log-2026-10-03-first-panel-tests). Expected: TE at about 60 Hz (LP commands only use lane 0), but no or garbled video. If 2 lanes also gives TE but no image, the RM69052 may need its lane count set by a register.
-- [ ] **Next board revision:** route D3 like the other pairs and **ignore the datasheet's pin 27 = D3N / pin 28 = D3P**, which is wrong (proven 2026-10-05: the reworked board fails, the unpatched one works). **HAT EEPROM WP:** the solder jumper from WP to 3.3 V uses a *closed* footprint, so the EEPROM is permanently write-protected (writes fail with data-byte NAKs). Use an open jumper, plus a defined pull-down so WP isn't left floating. **Touch I2C:** SCL and SDA are swapped on the 1.8 V side of the TCA9800 level shifter (between the shifter and panel pins 35/36); the S3402 only answers with the lines swapped. **TP_INT** has no external pull-up; add one (to 1.8 V, the touch side) — the prototype uses the Pi's internal pull-up. **TE** (GPIO 22) is 1.8 V into a 3.3 V input with no shifter; since nothing uses it in video mode, put it on a test point or jumper rather than adding a shifter. Prototype VBAT is fed from 5 V, above the 4.5 V recommended maximum (abs max 5.5 V); production will use the LiPo.
+- [ ] **Next board revision:** route D3 like the other pairs and **ignore datasheet v0.2's pin 27 = D3N / pin 28 = D3P**, which is wrong (proven 2026-10-05: the reworked board fails, the unpatched one works; datasheet v1.8 has it right). **HAT EEPROM WP:** the solder jumper from WP to 3.3 V uses a *closed* footprint, so the EEPROM is permanently write-protected (writes fail with data-byte NAKs). Use an open jumper, plus a defined pull-down so WP isn't left floating. **Touch I2C:** SCL and SDA are swapped on the 1.8 V side of the TCA9800 level shifter (between the shifter and panel pins 35/36); the S3402 only answers with the lines swapped. **Add a level shifter for TP_INT and TE:** both are 1.8 V panel outputs wired straight to 3.3 V Pi inputs. TE only guarantees a high level of 0.7 × VDDI ≈ 1.26 V (datasheet v1.8 p.7), which a 3.3 V input may not read as high. TP_INT has no external pull-up, and the Pi's internal one (to 3.3 V, used on the prototype) exceeds the touch domain's 2.0 V absolute maximum and can back-power TP_VDDI while the panel is off. Use a 2-channel 1.8 V → 3.3 V shifter (or BSS138 open-drain stages), with TP_INT pulled up to TP_VDDI on the panel side, then drop the Pi pull-up from the overlay. **OTP_PWR** (pin 10; pin 30 in v1.8 numbering) must be left floating on the system side (datasheet v1.8 p.6): check the board. Prototype VBAT is fed from 5 V, above the 4.5 V maximum (datasheet v1.8 gives 4.5 V as the absolute maximum, too); production will use the LiPo.
 - [x] **Power-off test** (blank/unblank via `/sys/class/graphics/fb0/blank`): clean since driver 1.14, no errors in `dmesg`.
 - [x] **Program the HAT EEPROM** (2026-10-05): classic v1 format, vendor `RasmusB`, product `PsioPi Mainboard`, ID `0x0001`, version `0x0001` (v0.1), panel overlay embedded (defaults incl. `rotation=270`). Built and flashed with `hat/make-eeprom.sh`. The firmware logs `Loaded HAT overlay`; `config.txt` no longer needs a `dtoverlay=panel-h497` line, and `fbcon=rotate` is gone from `cmdline.txt` (the console follows the overlay's panel orientation). The board's WP jumper had to be cut first (see board revision notes); with WP floating, writes work.
 - [x] **Debian packages** (2026-10-05): `packaging/build-debs.sh` builds `panel-h497-dkms` and `rmi4-psiopi-dkms` with `dpkg-deb`; CI attaches them to every run. Installed on the Pi from the packages instead of the manual DKMS steps.
@@ -183,7 +183,7 @@ The stock `vc4` hard-codes pulse mode (`ST_END`), EoT off (`HSDT_EOT_DISABLE`) a
 Also noted:
 - The Pi's DSI driver returns 0 instead of the byte count for successful reads, so `mipi_dsi_dcs_get_power_mode()` reports `-ENODATA`. The driver reads registers directly to work around this.
 - LP commands and reads sometimes time out while video is running. Consider retries in the driver.
-- TE (GPIO 22) has no level shifting (1.8 V into a 3.3 V input). Nothing uses TE in video mode (only `panel-check.sh` counts pulses as a liveness probe), so the next revision can put TE on a test point or a jumper instead of adding a shifter.
+- TE (GPIO 22) has no level shifting (1.8 V into a 3.3 V input), and the datasheet only guarantees a high level of 0.7 × VDDI ≈ 1.26 V. Nothing uses TE in video mode (only `panel-check.sh` counts pulses as a liveness probe), but the next revision gets a level shifter for it anyway (see [Remaining steps](#remaining-steps)).
 
 ## Background
 
@@ -210,6 +210,8 @@ The fix was a small kernel driver for the panel, plus an overlay that describes 
    - A preliminary init sequence.
 
    It does **not** contain porch or pixel-clock timings.
+
+   **Datasheet v1.8** (2015-07-21, H497TLB01.4) is newer and corrects v0.2 in places. A copy is public at [panoxdisplay.com](https://www.panoxdisplay.com/uploadfile/datasheet/H497TLB01%20.pdf); it is marked "all rights reserved", so it isn't kept in the repo. Findings in [Datasheet v1.8](#datasheet-v18-2015).
 
 2. **I2C capture (`i2c-dump.csv`)** from a working HDMI→DSI converter board that uses a Toshiba **TC358870** bridge at I2C address 0x0F. The bridge sends panel commands from its own I2C registers, so the capture contains:
    - **The real init sequence**, as DCS packets written through registers 0x0500 and 0x0504. Where it differs from the datasheet, the capture wins, because that board is known to work.
@@ -408,9 +410,25 @@ sudo cp ~/workspace/dts/driver/{panel-h497.c,Makefile,dkms.conf} /usr/src/panel-
 sudo dkms install panel-h497/$V
 ```
 
+## Datasheet v1.8 (2015)
+
+Findings from the H497TLB01.4 datasheet v1.8 (see [Sources](#sources-of-information)) that v0.2 lacks or gets wrong:
+
+- **Pin numbering is reversed.** v1.8 numbers the 39-pin FPC from the other end: pin *n* in v1.8 is pin 40 − *n* in v0.2. Checked against D2P (15), CKP/CKN (21/22), D3 and the touch I2C pins. This document uses v0.2 numbering.
+- **D3 is corrected.** v1.8 has D3N on 12 and D3P on 13 (v0.2 pins 28/27); the revision history says rev 0.6 (2014-01-08) "Revised pin 27 MIPI DSI data3+, pin 28 MIPI DSI data3-". This matches the hardware finding.
+- **Touch pins** (v1.8 / v0.2): TP_RESX 3/37, TP_SCL 4/36, TP_SDA 5/35, TP_INT 6/34 ("interrupt output", type not given), TP_VDDI 7/33, TP_VCC 8/32.
+- **Other pins:** TE 29/11 (output), OTP_PWR 30/10 ("Driver IC R/W use only, system side must floating"), VBAT 34–38/2–6.
+- **Absolute maximum ratings** (p.6): VBAT 4.5 V; VDDI and TP_VDDI −0.3 to 2.0 V; VCI and TP_VCC −0.3 to 4.0 V.
+- **Operating conditions** (p.7): VBAT 2.9–4.5 V (typ. 3.7), VDDI and TP_VDDI 1.65–1.95 V, VCI and TP_VCC 2.7–3.6 V (typ. 3.1). RESX input: high ≥ 0.8 × VDDI, low ≤ 0.2 × VDDI. TE output: high ≥ 0.7 × VDDI, low ≤ 0.3 × VDDI. Touch I/O levels are given as fractions of TP_VDDI (I2C noise margins, p.13).
+- **Display current** (p.7, white, 60 Hz): IBAT 300 mA typ., 360 mA max (460 mA at VBAT 2.9 V); IVCI 60/80 mA; IVDDI 1/10 mA. Deep standby < 1 µA.
+- **Touch current** (p.8): active TP_VDDI 13 mA (1 finger) to 18.5 mA (10 fingers), TP_VCC 12.5 mA; doze 0.4/0.35 mA; deep sleep 13.3/8 µA.
+- **Touch timing** (p.14, p.16): TP_RESX pulse ≥ 100 ns; bootloader starts ≤ 2 ms after reset (≤ 46 ms after power-up); reboot ≤ 16 ms; power-up ≤ 60 ms. Touch spec (p.19): 10 fingers, ≥ 100 Hz report rate, wake-up gestures (double tap, swipe).
+- **Init code** (p.17): the driver's default table (`h497_init`, from the capture) is nearly the same as v1.8. v1.8 differs in `BB` (00 × 7, driver 77 × 7) and `BE` (22 38 78, driver 32 38 78), and adds `C0`/`C1` (page 0), `EA 7F 20 00 00 00` (page 2) and `C3 00 10 50 50 50` (page 5). The panel works without them; they are candidates if image-quality issues turn up.
+- **Touch registers** (p.20–21): I2C address 0x20, F12 finger data from 0x0006, object types (finger, stylus, palm, gloved finger). The upstream RMI4 driver already handles this.
+
 ## Touchscreen
 
-Wiring (PsioPi prototype): the CM4 IO board's DSI connector I2C (GPIO 44/45, `i2c_csi_dsi`) → TCA9800 level shifter → panel pins 35/36. TP_INT on GPIO 25, TP_RESX on GPIO 24 (active low, 1.8 V via divider). Touch supplies are the panel rails (VDD 3.3 V on the prototype, VDDI 1.8 V, switched by GPIO 23/18).
+Wiring (PsioPi prototype): the CM4 IO board's DSI connector I2C (GPIO 44/45, `i2c_csi_dsi`) → TCA9800 level shifter → panel pins 35/36 (SDA/SCL; pins 5/4 in v1.8 numbering). TP_INT on GPIO 25, TP_RESX on GPIO 24 (active low, 1.8 V via divider). Touch supplies are the panel rails (VDD 3.3 V on the prototype, VDDI 1.8 V, switched by GPIO 23/18).
 
 Bring-up 2026-10-05:
 - The Raspberry Pi kernel has **no RMI4 driver** (`# CONFIG_RMI4_CORE is not set`, and `include/linux/rmi.h` is not in the headers), so it has to come as a DKMS module.
@@ -418,7 +436,7 @@ Bring-up 2026-10-05:
 - Measured at the panel connector: TP_VCC 3.284 V, TP_VDDI 1.800 V, RESX 1.8 V, TCA9800 supplies and EN as expected.
 - A bit-banged bus with the lines swapped (`dtoverlay i2c-gpio i2c_gpio_sda=45 i2c_gpio_scl=44 bus=11`) finds the controller at **0x20**: **SCL/SDA are swapped on the 1.8 V side of the TCA9800** (board routing).
 - RMI4 identification: manufacturer 0x01 (Synaptics), product **`S3402BR`**. Page Description Table (page 0): **F34** at 0xE9 (flash), **F01** at 0xE3 (query base 0x24), **F12** at 0xDD (2D sensor). TP_INT low is the controller's ATTN request, not a fault.
-- TP_INT needs a pull-up; none on the board, the Pi's internal one is used for now.
+- TP_INT needs a pull-up; none on the board, the Pi's internal one is used for now. That pull-up goes to 3.3 V, but TP_INT is in the 1.8 V TP_VDDI domain (absolute maximum 2.0 V). Datasheet v1.8 doesn't give TP_INT's output type (open-drain or push-pull) or its levels, and the S3402 datasheet is only available under NDA. A sibling Synaptics datasheet (S7817, seen only as a search summary) says the ATTN pull-up must go to the controller's I/O supply, because its ESD diodes otherwise leak pull-up current into that supply when power is off. The next board revision adds a level shifter (see [Remaining steps](#remaining-steps)).
 - After swapping SCL/SDA on the board (rework), the controller answers on the hardware bus.
 
 Solution:

@@ -7,7 +7,7 @@ Linux driver and device tree overlay for the AUO/Topwin **H497TLB01** 4.97" 720Ã
 - Configurable lanes, rotation, DSI port and GPIOs through overlay parameters
 - Rebuilt automatically on kernel updates (DKMS)
 
-> **Status:** working on a Compute Module 4 (DSI1, 4 lanes, 60 Hz) with the stock `vc4` driver. Note: the H497TLB01 datasheet swaps D3P/D3N (pins 27/28); route D3 like the other pairs.
+> **Status:** working on a Compute Module 4 (DSI1, 4 lanes, 60 Hz) with the stock `vc4` driver. Note: the H497TLB01 datasheet v0.2 swaps D3P/D3N (pins 27/28; fixed in datasheet rev 0.6); route D3 like the other pairs.
 
 ## Supported hardware
 
