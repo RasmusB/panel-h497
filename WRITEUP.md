@@ -304,17 +304,20 @@ Common: 35 00 (TE on) | 53 20 (brightness ctrl, added) | 11 (Sleep Out) | 29 (Di
 
 No udev rule was needed for brightness. The existing `/lib/udev/rules.d/60-backlight.rules` already makes `brightness` writable by the `video` group, and the user is in that group. systemd also saves and restores the brightness across reboots.
 
-## Verified on hardware (2026-10-05, kernel 6.12.109, driver 1.14)
+## Verified on hardware (2026-10-05, kernel 6.12.109, driver 1.17)
 
 | Check | Result |
 |---|---|
-| HAT EEPROM | `/proc/device-tree/hat/product` = `PsioPi Mainboard`; firmware log `Loaded HAT overlay` |
-| Driver | loaded from `/lib/modules/6.12.109+rpt-rpi-v8/updates/dkms/`, no module options |
+| HAT EEPROM | `/proc/device-tree/hat/product` = `PsioPi Mainboard`; firmware log `Loaded HAT overlay`. Contents still current: a rebuilt image differs from the flashed one only in the auto-generated UUID |
+| Driver | 1.17 from the `panel-h497-dkms` package, loaded from `/lib/modules/6.12.109+rpt-rpi-v8/updates/dkms/`, no module options |
 | vc4 | stock module, `bound fe700000.dsi` |
 | `/sys/class/drm/card1-DSI-1` | `connected`, `enabled`, `720x1280` at 60 Hz |
 | Image | correct, landscape (`fbcon` rotation 3 from the overlay's `rotation=270`) |
 | Brightness | `/sys/class/backlight/panel-h497`, writes work without sudo |
 | Blank/unblank | image returns at the stored brightness, no errors in `dmesg` |
+| DCS reads during video | 100 ID reads at 50 ms: 90 clean (`82 00`), 10 vc4 timeouts, **no error reports**; 36/4 after blank/unblank. ID `82 00 15`, power mode `9C`, panel DSI error count 0 over 5 s |
+| Current (VBAT 3.3 V) | 16 mA on the console, 74 mA full white at brightness 128 |
+| Touch | `Synaptics S3402BR` input device, `rmi4-psiopi` 1.1 |
 
 ## Overlay parameters
 
