@@ -15,7 +15,7 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 - [x] **Raise to 60 Hz.** Works with the stock `vc4`; the hardware overhead is one byte clock, so stock prepare times are in spec at 429 Mbit/s.
 - [x] **Clean up the panel driver defaults** (1.14): non-continuous clock, `early_power`, burst, `early_display_on` on; `debug` off; initial brightness = backlight level. No `/etc/modprobe.d/panel-h497.conf` needed.
 - [ ] **Report the low-rate prepare-time issue** to the Raspberry Pi kernel (measurements in the bring-up log), optionally with a `vc4` patch that accounts for the one-byte-clock overhead.
-- [x] **Checksum flags during video: systematic, cosmetic, won't fix** (2026-10-05). The panel reports a checksum error (`0x0400`) in every ~50 ms interval while video runs, yet the image is correct. Test: panel ID read (`0xDA`) every 50 ms, 60–100 reads per framebuffer content: console, all black, all white, noise, gradient. Result: **0 clean answers in 340 replies**, always `0x0400`, independent of the image content (even all-zero pixels); 5 replies had extra flags (length, EoT sync, ECC), and ~9 % of reads timed out (vc4, see below). Conclusion: one kind of long packet in every frame arrives with a checksum the panel disagrees with, most likely vc4's pixel-packet CRC. Not pursued: the decisive test would be setting vc4's `DISABLE_DISP_CRCC` bit, and fixing it would need a vc4 patch.
+- [x] **Checksum flags during video: fixed by the v1.8 init (driver 1.16, 2026-10-05).** With the capture-based init, the panel reported a checksum error (`0x0400`) in every ~50 ms interval while video ran, yet the image was correct (0 clean answers in 340 ID reads, independent of framebuffer content; earlier suspicion: vc4's pixel-packet CRC). The datasheet v1.8 init stops it: 100 ID reads at 50 ms give **86–93 clean replies (`82 00`) and no error reports**, versus 0 clean with the capture (the rest are vc4 timeouts, see below). The panel's DSI error counter (DCS `05`) stays at 0 over 5 s, and DCS reads during video now return data (power mode `9C`). Bisected through debugfs on top of the capture init: only **page 2 `EA`** matters. Any write of all five bytes with bytes 3–5 zero, or with a single bit set in one of them, stops the reports; bytes 1–2 don't matter; a 1- or 2-byte write has no effect; `EA 7F 20 FF FF FF` swaps the checksum flag for EoT sync/ECC flags (`0x0304`). The register is undocumented, so it may configure error checking or reporting rather than fix a real link error; either way the image and current are unchanged (74 vs 75 mA, white at brightness 128).
 - [ ] **Reads during video are unreliable** on vc4 (timeouts, wrong values). Only matters for debugging.
 - [x] **Commands during video time out now and then** (2026-10-05, kernel 6.12): vc4 slips low-power commands into the running video and gives up after 500 ms (`DSI transfer failed whilst in HS mode stat: 0x00020003`, `-ETIMEDOUT`); 3 of 40 brightness writes failed. At one boot `systemd-backlight` failed to restore the brightness twice in a row. Driver 1.15 retries commands sent during video (brightness, Display On/Off, Sleep In) up to 3 times on `-ETIMEDOUT`.
 - [ ] **Remove the VBAT runaway risk:** the grey "runaway" seen on 2026-10-03 happened with corrupted video. Confirm VBAT current stays sane with real images at full brightness.
@@ -214,7 +214,7 @@ The fix was a small kernel driver for the panel, plus an overlay that describes 
    **Datasheet v1.8** (2015-07-21, H497TLB01.4) is newer and corrects v0.2 in places. A copy is public at [panoxdisplay.com](https://www.panoxdisplay.com/uploadfile/datasheet/H497TLB01%20.pdf); it is marked "all rights reserved", so it isn't kept in the repo. Findings in [Datasheet v1.8](#datasheet-v18-2015).
 
 2. **I2C capture (`i2c-dump.csv`)** from a working HDMI→DSI converter board that uses a Toshiba **TC358870** bridge at I2C address 0x0F. The bridge sends panel commands from its own I2C registers, so the capture contains:
-   - **The real init sequence**, as DCS packets written through registers 0x0500 and 0x0504. Where it differs from the datasheet, the capture wins, because that board is known to work.
+   - **The real init sequence**, as DCS packets written through registers 0x0500 and 0x0504. The driver used it up to 1.15; since 1.16 it uses the datasheet v1.8 init, which stops the checksum error reports.
    - **The EDID** the bridge presents over HDMI. Its timing descriptor gives the video timings: 66.90 MHz pixel clock; horizontal 720 + 60/40/35 and vertical 1280 + 8/8/8 (front porch / sync / back porch). That works out to exactly 60.0 Hz.
    - **DSI configuration:** 4 lanes (`LANE_ENABLE = 0x14`) in video mode.
 
@@ -273,17 +273,20 @@ The Pi's graphics driver (vc4) generates the video signal. The panel driver tell
 - **Brightness** is a backlight device at `/sys/class/backlight/panel-h497`, range 0–255 (128 until systemd restores the saved value). Changes are sent as DCS `0x51 <value>`. Changes made while the panel is off are saved and applied when it powers on. The brightness-to-0 command the backlight core sends when blanking is skipped: it timed out during video, and Display Off follows anyway.
 - **Module parameters** let you tune timings without rebuilding (see below).
 
-### Init sequence (from the I2C capture)
+### Init sequence (datasheet v1.8)
+
+Since driver 1.16 the init table is the datasheet v1.8 "Display Initial Setting" (p.17). Up to 1.15 it was the I2C capture (in git history), which lacked `C0`, `C1`, `EA` and page 5 `C3` and had `BB 77×7` and `BE 32 38 78`.
 
 ```
-Page 0: F0 55 AA 52 08 00 | B0 00 10 10 | BA 60 | BB 77×7
-Page 2: F0 55 AA 52 08 02 | CA 04 | E1 00 | E2 0A | E3 40 | E7 00×4
-        ED 48 00 E0 13 08 00 91 08 | FD 00 08 1C 00 00 01
+Page 0: F0 55 AA 52 08 00 | B0 00 10 10 | BA 60 | BB 00×7
+        C0 C0 04 00 20 02 E4 E1 C0 | C1 C0 04 00 20 04 E4 E1 C0
+Page 2: F0 55 AA 52 08 02 | EA 7F 20 00 00 00 | CA 04 | E1 00 | E2 0A
+        E3 40 | E7 00×4 | ED 48 00 E0 13 08 00 91 08 | FD 00 08 1C 00 00 01
         C3 11 24 04 0A 02 04 00 1C 10 F0 00
 Page 3: F0 55 AA 52 08 03 | E0 00 | F1 00 00 00 00 00 15 | F6 08
-Page 5: F0 55 AA 52 08 05 | C4 00 14 | C9 04
+Page 5: F0 55 AA 52 08 05 | C3 00 10 50 50 50 | C4 00 14 | C9 04
 Page 1: F0 55 AA 52 08 01 | B0 06×3 | B1 14×3 | B2 00×3 | B4 66×3
-        B5 44×3 | B6 54×3 | B7 24×3 | B9 04×3 | BA 14×3 | BE 32 38 78
+        B5 44×3 | B6 54×3 | B7 24×3 | B9 04×3 | BA 14×3 | BE 22 38 78
 Common: 35 00 (TE on) | 53 20 (brightness ctrl, added) | 11 (Sleep Out) | 29 (Display On)
 ```
 
@@ -403,7 +406,7 @@ The old version's `prerm` removes it from DKMS, the new version's `postinst` bui
 Without the packages, by hand (development only):
 
 ```bash
-OLD=1.14; V=1.15   # installed and new version
+OLD=1.15; V=1.16   # installed and new version
 sudo dkms remove panel-h497/$OLD --all
 sudo mkdir -p /usr/src/panel-h497-$V
 sudo cp ~/workspace/dts/driver/{panel-h497.c,Makefile,dkms.conf} /usr/src/panel-h497-$V/
@@ -423,7 +426,7 @@ Findings from the H497TLB01.4 datasheet v1.8 (see [Sources](#sources-of-informat
 - **Display current** (p.7, white, 60 Hz): IBAT 300 mA typ., 360 mA max (460 mA at VBAT 2.9 V); IVCI 60/80 mA; IVDDI 1/10 mA. Deep standby < 1 µA.
 - **Touch current** (p.8): active TP_VDDI 13 mA (1 finger) to 18.5 mA (10 fingers), TP_VCC 12.5 mA; doze 0.4/0.35 mA; deep sleep 13.3/8 µA.
 - **Touch timing** (p.14, p.16): TP_RESX pulse ≥ 100 ns; bootloader starts ≤ 2 ms after reset (≤ 46 ms after power-up); reboot ≤ 16 ms; power-up ≤ 60 ms. Touch spec (p.19): 10 fingers, ≥ 100 Hz report rate, wake-up gestures (double tap, swipe).
-- **Init code** (p.17): the driver's default table (`h497_init`, from the capture) is nearly the same as v1.8. v1.8 differs in `BB` (00 × 7, driver 77 × 7) and `BE` (22 38 78, driver 32 38 78), and adds `C0`/`C1` (page 0), `EA 7F 20 00 00 00` (page 2) and `C3 00 10 50 50 50` (page 5). The panel works without them; they are candidates if image-quality issues turn up.
+- **Init code** (p.17): the driver's default since 1.16 (see [Init sequence](#init-sequence-datasheet-v18)). The earlier capture-based table was nearly the same; v1.8 differs in `BB` (00 × 7, capture 77 × 7) and `BE` (22 38 78, capture 32 38 78), and adds `C0`/`C1` (page 0), `EA 7F 20 00 00 00` (page 2) and `C3 00 10 50 50 50` (page 5). `EA` stops the checksum error reports during video (see [Remaining steps](#remaining-steps)); the rest made no visible or measurable difference.
 - **Touch registers** (p.20–21): I2C address 0x20, F12 finger data from 0x0006, object types (finger, stylus, palm, gloved finger). The upstream RMI4 driver already handles this.
 
 ## Touchscreen
