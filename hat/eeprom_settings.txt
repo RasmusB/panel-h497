@@ -46,6 +46,8 @@ back_power 0
 # GPIO pins
 #
 # None are set here: the panel GPIOs (18 VDDI enable, 23 VDD enable,
-# 27 reset, 22 TE) are claimed by the overlay and its driver, which
+# 27 reset) are claimed by the overlay and its driver, which
 # sequence the panel supplies. Setting them as outputs from the EEPROM
 # would let the firmware drive them before the driver takes over.
+# GPIO 22 (TE) is claimed by nothing and stays a default input; only
+# panel-check.sh reads it.

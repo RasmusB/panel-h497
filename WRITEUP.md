@@ -183,7 +183,7 @@ The stock `vc4` hard-codes pulse mode (`ST_END`), EoT off (`HSDT_EOT_DISABLE`) a
 Also noted:
 - The Pi's DSI driver returns 0 instead of the byte count for successful reads, so `mipi_dsi_dcs_get_power_mode()` reports `-ENODATA`. The driver reads registers directly to work around this.
 - LP commands and reads sometimes time out while video is running. Consider retries in the driver.
-- TE (GPIO 22) has no level shifting (1.8 V into a 3.3 V input): add a shifter in the next revision.
+- TE (GPIO 22) has no level shifting (1.8 V into a 3.3 V input). Nothing uses TE in video mode (only `panel-check.sh` counts pulses as a liveness probe), so the next revision can put TE on a test point or a jumper instead of adding a shifter.
 
 ## Background
 
