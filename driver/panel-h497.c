@@ -48,9 +48,9 @@ module_param(vbp, uint, 0444);
 MODULE_PARM_DESC(vbp, "Vertical back porch (default 8)");
 module_param(burst, bool, 0444);
 MODULE_PARM_DESC(burst, "Use DSI burst mode (default Y); N = non-burst sync pulses");
-static bool noncont;
+static bool noncont = true;
 module_param(noncont, bool, 0444);
-MODULE_PARM_DESC(noncont, "Non-continuous DSI clock: clock lane returns to LP between transfers (default N)");
+MODULE_PARM_DESC(noncont, "Non-continuous DSI clock: clock lane returns to LP between transfers (default Y; the panel then also locks onto the clock after blank/unblank)");
 static bool no_eot;
 module_param(no_eot, bool, 0444);
 MODULE_PARM_DESC(no_eot, "Don't send EoT packets after HS bursts, for DSI 1.0 receivers (default N)");
@@ -60,15 +60,15 @@ MODULE_PARM_DESC(late_init, "Power and reset the panel before the DSI host start
 static int init_set;
 module_param(init_set, int, 0644);
 MODULE_PARM_DESC(init_set, "Init sequence: 0 = I2C capture, 1 = datasheet verbatim, 2 = none (OTP defaults) (default 0)");
-static int init_brightness = 0x20;
+static int init_brightness = -1;
 module_param(init_brightness, int, 0644);
-MODULE_PARM_DESC(init_brightness, "Brightness (0x51) sent before video, 0-255; -1 = don't send (default 0x20)");
-static bool early_display_on;
+MODULE_PARM_DESC(init_brightness, "Brightness (0x51) sent before video, 0-255; -1 = current backlight level (default -1)");
+static bool early_display_on = true;
 module_param(early_display_on, bool, 0644);
-MODULE_PARM_DESC(early_display_on, "Send Display On before video starts, as the TC358870 does (default N)");
-static bool early_power;
+MODULE_PARM_DESC(early_display_on, "Send Display On before video starts, as the TC358870 does (default Y)");
+static bool early_power = true;
 module_param(early_power, bool, 0444);
-MODULE_PARM_DESC(early_power, "Power up and reset the panel at probe, before the DSI host starts its clock (default N)");
+MODULE_PARM_DESC(early_power, "Power up and reset the panel at probe, before the DSI host starts its clock (default Y)");
 static bool tc_exact;
 module_param(tc_exact, bool, 0444);
 MODULE_PARM_DESC(tc_exact, "Replay the TC358870 board exactly: all init as DCS long + 0x03 spacers, no 53/51, Sleep Out 300 ms, Display On before video, non-burst sync pulses, continuous clock (default N)");
@@ -82,6 +82,7 @@ MODULE_PARM_DESC(debug, "Read back panel ID and power mode during power-up (defa
 #define HACTIVE 720
 #define VACTIVE 1280
 #define MAX_BRIGHTNESS 255
+#define DEFAULT_BRIGHTNESS 128
 
 struct h497 {
 	struct drm_panel panel;
@@ -576,13 +577,16 @@ static int h497_init_and_wake(struct h497 *ctx)
 	/*
 	 * Set brightness while the link is still in LP. Commands sent after
 	 * video starts may never arrive, leaving the panel at its power-on
-	 * default (maximum).
+	 * default (maximum). Use the backlight's stored level, not
+	 * backlight_get_brightness(), which returns 0 while it is blanked.
 	 */
-	if (init_brightness >= 0) {
-		u8 level = min(init_brightness, MAX_BRIGHTNESS);
+	{
+		int level = init_brightness >= 0 ? init_brightness :
+			    ctx->panel.backlight->props.brightness;
+		u8 val = clamp(level, 0, MAX_BRIGHTNESS);
 
 		ret = mipi_dsi_dcs_write(ctx->dsi, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
-					 &level, 1);
+					 &val, 1);
 		if (ret < 0)
 			dev_warn(dev, "initial brightness failed: %d\n", ret);
 	}
@@ -780,6 +784,14 @@ static int h497_bl_update_status(struct backlight_device *bl)
 	if (!ctx->prepared)
 		return 0;
 
+	/*
+	 * Blanking: Display Off follows right away, and a command sent while
+	 * video still runs often times out on vc4. The stored level is sent
+	 * again before video on the next power-up.
+	 */
+	if (backlight_is_blank(bl))
+		return 0;
+
 	/* The TC358870 board never sends brightness */
 	if (tc_exact)
 		return 0;
@@ -875,7 +887,8 @@ static int h497_probe(struct mipi_dsi_device *dsi)
 	{
 		const struct backlight_properties props = {
 			.type = BACKLIGHT_RAW,
-			.brightness = MAX_BRIGHTNESS,
+			/* Until systemd restores the saved level */
+			.brightness = DEFAULT_BRIGHTNESS,
 			.max_brightness = MAX_BRIGHTNESS,
 		};
 

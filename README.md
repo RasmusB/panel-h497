@@ -7,7 +7,7 @@ Linux driver and device tree overlay for the AUO/Topwin **H497TLB01** 4.97" 720Ã
 - Configurable lanes, rotation, DSI port and GPIOs through overlay parameters
 - Rebuilt automatically on kernel updates (DKMS)
 
-> **Status:** early development, not yet verified on hardware.
+> **Status:** working on a Compute Module 4 (DSI1, 4 lanes, 60 Hz) with the stock `vc4` driver. Note: the H497TLB01 datasheet swaps D3P/D3N (pins 27/28); route D3 like the other pairs.
 
 ## Supported hardware
 
@@ -25,7 +25,7 @@ Requires Raspberry Pi OS (64-bit) with kernel headers (`linux-headers-rpi-v8`, n
 sudo apt install --no-install-recommends dkms device-tree-compiler cpp
 
 # Driver (DKMS)
-VER=1.13
+VER=1.14
 sudo mkdir -p /usr/src/panel-h497-$VER
 sudo cp driver/{panel-h497.c,Makefile,dkms.conf} /usr/src/panel-h497-$VER/
 sudo dkms install panel-h497/$VER
