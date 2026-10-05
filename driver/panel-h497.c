@@ -57,9 +57,6 @@ MODULE_PARM_DESC(no_eot, "Don't send EoT packets after HS bursts, for DSI 1.0 re
 static bool late_init;
 module_param(late_init, bool, 0444);
 MODULE_PARM_DESC(late_init, "Power and reset the panel before the DSI host starts, send init once the link is up (default N)");
-static int init_set;
-module_param(init_set, int, 0644);
-MODULE_PARM_DESC(init_set, "Init sequence: 0 = datasheet v1.8, 1 = datasheet v0.2 verbatim, 2 = none (OTP defaults) (default 0)");
 static int init_brightness = -1;
 module_param(init_brightness, int, 0644);
 MODULE_PARM_DESC(init_brightness, "Brightness (0x51) sent before video, 0-255; -1 = current backlight level (default -1)");
@@ -126,50 +123,6 @@ static ssize_t h497_dcs_write_video(struct h497 *ctx, u8 cmd,
 	return ret;
 }
 
-#define G 1	/* generic write (0x23 / 0x29) */
-#define D 0	/* DCS write (0x15 / 0x39) */
-
-/*
- * Datasheet (H497TLB01 v0.2, p.18-21) recommended sequence, verbatim.
- * Each entry: length, packet type, bytes. Obvious typos in the table are
- * corrected: second "C30B" is C30C, "B001" in step 113 is BA02.
- */
-static const u8 h497_init_datasheet[] = {
-	/* Page 0 */
-	6, G, 0xF0, 0x55, 0xAA, 0x52, 0x08, 0x00,
-	4, G, 0xB0, 0x00, 0x10, 0x10,
-	7, G, 0xB7, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10,
-	2, G, 0xBA, 0x60,
-	8, G, 0xBB, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77,
-	/* Page 2 */
-	6, G, 0xF0, 0x55, 0xAA, 0x52, 0x08, 0x02,
-	2, G, 0xCA, 0x04,
-	2, G, 0xE2, 0x2A,
-	2, G, 0xE3, 0x40,
-	6, G, 0xE7, 0x00, 0x00, 0x00, 0x00, 0x00,
-	8, G, 0xED, 0x48, 0x00, 0xE0, 0x13, 0x08, 0x00, 0x90,
-	7, G, 0xFD, 0x00, 0x08, 0x1C, 0x00, 0x00, 0x01,
-	18, D, 0xC3, 0x11, 0x24, 0x04, 0x0A, 0x07, 0x04, 0x00, 0x1C,
-	       0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
-	/* Page 3 */
-	6, G, 0xF0, 0x55, 0xAA, 0x52, 0x08, 0x03,
-	7, G, 0xF1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0B,
-	2, G, 0xF6, 0x08,
-	/* Page 1 */
-	6, G, 0xF0, 0x55, 0xAA, 0x52, 0x08, 0x01,
-	4, G, 0xB0, 0x06, 0x06, 0x06,
-	4, G, 0xB1, 0x14, 0x14, 0x14,
-	4, G, 0xB2, 0x06, 0x06, 0x06,
-	4, G, 0xB4, 0x14, 0x14, 0x14,
-	4, G, 0xB5, 0x44, 0x44, 0x44,
-	4, G, 0xB6, 0x44, 0x44, 0x44,
-	4, G, 0xB9, 0x24, 0x24, 0x24,
-	4, G, 0xBA, 0x14, 0x14, 0x14,
-	4, G, 0xBE, 0x23, 0x78, 0x78,
-	/* Tearing effect output on */
-	2, D, 0x35, 0x00,
-};
-
 /*
  * Datasheet v1.8 (2015-07-21, p.17) "Display Initial Setting", verbatim.
  * The datasheet has no 53; it is added so brightness control works.
@@ -226,39 +179,6 @@ static const u8 h497_init[] = {
 	2, 0x53, 0x20,
 };
 
-/* No manufacturer setup: only TE on, rely on OTP defaults */
-static const u8 h497_init_none[] = {
-	2, D, 0x35, 0x00,
-};
-
-#undef G
-#undef D
-
-/* Typed tables (length, type, bytes) as used for init_set 1 and 2 */
-static int h497_send_typed(struct h497 *ctx, const u8 *p, size_t size)
-{
-	const u8 *end = p + size;
-	ssize_t ret;
-
-	while (p < end) {
-		u8 len = p[0], generic = p[1];
-
-		p += 2;
-		if (generic)
-			ret = mipi_dsi_generic_write(ctx->dsi, p, len);
-		else
-			ret = mipi_dsi_dcs_write_buffer(ctx->dsi, p, len);
-		if (ret < 0) {
-			dev_err(&ctx->dsi->dev, "init cmd 0x%02x failed: %zd\n",
-				p[0], ret);
-			return ret;
-		}
-		p += len;
-	}
-
-	return 0;
-}
-
 /*
  * Send one packet of exactly the given data type in LP mode. The core
  * helpers choose the type from the length (2 bytes -> 0x15), but the
@@ -300,15 +220,6 @@ static int h497_send_init(struct h497 *ctx)
 	const u8 *p = h497_init;
 	const u8 *end = h497_init + sizeof(h497_init);
 	ssize_t ret;
-
-	if (debug)
-		dev_info(&ctx->dsi->dev, "init_set %d\n", init_set);
-	if (init_set == 1)
-		return h497_send_typed(ctx, h497_init_datasheet,
-				       sizeof(h497_init_datasheet));
-	if (init_set == 2)
-		return h497_send_typed(ctx, h497_init_none,
-				       sizeof(h497_init_none));
 
 	while (p < end) {
 		u8 len = *p++;

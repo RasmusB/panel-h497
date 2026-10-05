@@ -275,7 +275,7 @@ The Pi's graphics driver (vc4) generates the video signal. The panel driver tell
 
 ### Init sequence (datasheet v1.8)
 
-Since driver 1.16 the init table is the datasheet v1.8 "Display Initial Setting" (p.17). Up to 1.15 it was the I2C capture (in git history), which lacked `C0`, `C1`, `EA` and page 5 `C3` and had `BB 77×7` and `BE 32 38 78`.
+Since driver 1.16 the init table is the datasheet v1.8 "Display Initial Setting" (p.17). Driver 1.17 dropped the `init_set` option and its alternatives (datasheet v0.2 verbatim, and no init at all); they are in git history. Up to 1.15 the table was the I2C capture (also in git history), which lacked `C0`, `C1`, `EA` and page 5 `C3` and had `BB 77×7` and `BE 32 38 78`.
 
 ```
 Page 0: F0 55 AA 52 08 00 | B0 00 10 10 | BA 60 | BB 00×7
@@ -352,7 +352,7 @@ options panel-h497 clock_khz=66900 hfp=60 hsync=40 hbp=35 vfp=8 vsync=8 vbp=8
 | `early_display_on` | `Y` | Send Display On before video starts. |
 | `init_brightness` | `-1` | Brightness sent before video; `-1` = current backlight level. |
 | `debug` | `N` | Read back ID, power mode and error count during power-up (reads during video time out). |
-| `tc_exact`, `late_init`, `no_eot`, `lane_reg`, `init_set` | off | Bring-up experiments; see the bring-up logs. |
+| `tc_exact`, `late_init`, `no_eot`, `lane_reg` | off | Bring-up experiments; see the bring-up logs. |
 | `clock_khz` | 66900 | Pixel clock |
 | `hfp` / `hsync` / `hbp` | 60 / 40 / 35 | Horizontal front porch / sync / back porch |
 | `vfp` / `vsync` / `vbp` | 8 / 8 / 8 | Vertical front porch / sync / back porch |
@@ -406,7 +406,7 @@ The old version's `prerm` removes it from DKMS, the new version's `postinst` bui
 Without the packages, by hand (development only):
 
 ```bash
-OLD=1.15; V=1.16   # installed and new version
+OLD=1.16; V=1.17   # installed and new version
 sudo dkms remove panel-h497/$OLD --all
 sudo mkdir -p /usr/src/panel-h497-$V
 sudo cp ~/workspace/dts/driver/{panel-h497.c,Makefile,dkms.conf} /usr/src/panel-h497-$V/
