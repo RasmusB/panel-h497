@@ -567,6 +567,17 @@ static int dsi_blank;
 module_param(dsi_blank, int, 0644);
 MODULE_PARM_DESC(dsi_blank, "Blanking packet bits OR'ed into DISP0: 0x80 HBP, 0x100 HFP, 0x200 VBLP, 0x400 HACTIVE_NULL (default 0)");
 
+/*
+ * Prepare times in UI, -1 = driver default. The hardware adds about one byte
+ * clock (8 UI) to the programmed value, measured on a CM4 at 120 Mbit/s.
+ */
+static int dsi_cprep = -1;
+module_param(dsi_cprep, int, 0644);
+MODULE_PARM_DESC(dsi_cprep, "Clock lane TCLK-PREPARE in UI (hardware adds ~8 UI); -1 = default");
+static int dsi_hsprep = -1;
+module_param(dsi_hsprep, int, 0644);
+MODULE_PARM_DESC(dsi_hsprep, "Data lane THS-PREPARE in UI (hardware adds ~8 UI); -1 = default");
+
 struct vc4_dsi_variant {
 	/* Whether we're on bcm2835's DSI0 or DSI1. */
 	unsigned int port;
@@ -1091,7 +1102,8 @@ static void vc4_dsi_bridge_pre_enable(struct drm_bridge *bridge,
 				     DSI_HS_CLT0_CZERO) |
 		       VC4_SET_FIELD(dsi_hs_timing(ui_ns, 0, 8),
 				     DSI_HS_CLT0_CPRE) |
-		       VC4_SET_FIELD(dsi_hs_timing(ui_ns, 38, 0),
+		       VC4_SET_FIELD(dsi_cprep >= 0 ? dsi_cprep :
+				     dsi_hs_timing(ui_ns, 38, 0),
 				     DSI_HS_CLT0_CPREP));
 
 	DSI_PORT_WRITE(HS_CLT1,
@@ -1109,7 +1121,8 @@ static void vc4_dsi_bridge_pre_enable(struct drm_bridge *bridge,
 				     DSI_HS_DLT3_EXIT) |
 		       VC4_SET_FIELD(dsi_hs_timing(ui_ns, 105, 6),
 				     DSI_HS_DLT3_ZERO) |
-		       VC4_SET_FIELD(dsi_hs_timing(ui_ns, 40, 4),
+		       VC4_SET_FIELD(dsi_hsprep >= 0 ? dsi_hsprep :
+				     dsi_hs_timing(ui_ns, 40, 4),
 				     DSI_HS_DLT3_PRE));
 
 	DSI_PORT_WRITE(HS_DLT4,
