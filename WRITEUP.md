@@ -24,7 +24,7 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 - [x] **Brightness control:** the standard DCS `0x51` works; `/sys/class/backlight/panel-h497` dims the panel.
 - [x] **Rotation** only through the overlay (`rotation=270`, the default); `fbcon=rotate` removed from `cmdline.txt`. Console and desktops follow the DRM panel orientation.
 - [x] **Kernel update** (2026-10-05): `apt full-upgrade` from 6.6.31 to 6.12.109. DKMS rebuilt the driver for both kernels (`rpi-v8` and `rpi-2712`) during the upgrade; after reboot image, HAT overlay, rotation, brightness and blank/unblank all work, no DSI errors.
-- [ ] **Remove the 6.6.31 fallback** once 6.12 has run for a few days: `/boot/firmware/kernel8-6.6.31.img`, `initramfs8-6.6.31`, `/root/kernel-fallback-6.6.31/`. To boot it instead, add `kernel=kernel8-6.6.31.img` and `initramfs initramfs8-6.6.31 followkernel` to `config.txt`.
+- [x] **Removed the 6.6.31 fallback** (2026-10-05): `/boot/firmware/kernel8-6.6.31.img`, `initramfs8-6.6.31`, `/root/kernel-fallback-6.6.31/`. The 6.6.31 kernel, header and kbuild packages were purged too; DKMS removed its 6.6.31 builds through its kernel hook.
 - [ ] **Optional: remove leftover module folders** in `/lib/modules/` from earlier custom kernels (`6.1.21-v8+`, `6.6.45-v8*`, `6.6.47-v8*`), and the old `/boot/firmware/kernel8-backup.img` (2024-08), if nothing uses them.
 - [x] **Installed driver 1.2 and the new overlay** (lanes/pins/rotation parameters) on the Pi.
 - [x] **Breakout board power test** (no panel): VDDI and VDD measured correct when on and 0 V when switched off by the driver. HAT EEPROM answers at 0x50 and is empty (all `0xFF`).
@@ -290,11 +290,11 @@ Common: 35 00 (TE on) | 53 20 (brightness ctrl, added) | 11 (Sleep Out) | 29 (Di
 |---|---|---|
 | `dkms` package (installed with `--no-install-recommends`) | apt | n/a |
 | Packages `panel-h497-dkms` and `rmi4-psiopi-dkms` (sources in `/usr/src/panel-h497-<ver>/`, `/usr/src/rmi4-psiopi-<ver>/`, registered with DKMS by their `postinst`) | apt / dpkg | none (new) |
-| Kernel module, built by DKMS | `/lib/modules/<kernel>/updates/dkms/panel-h497.ko.xz` (6.6.31, 6.12.109 v8 and 2712) | none (new file) |
+| Kernel modules, built by DKMS | `/lib/modules/<kernel>/updates/dkms/` (`panel-h497`, `rmi_core`, `rmi_i2c`; 6.12.109 v8 and 2712) | none (new files) |
 | Overlay | Embedded in the board's HAT EEPROM; also installed as `/boot/firmware/overlays/panel-h497.dtbo` (older build, default rotation 0, unused) | none |
 | Removed `dtoverlay=panel-rm69052`; no panel `dtoverlay` line any more (the HAT overlay replaces it); `dtdebug=1` removed; `display_auto_detect=0` (was already set) | `/boot/firmware/config.txt` | `config.txt.bak-202610012156` (original) |
 | `fbcon=rotate:1` added on 2026-10-01, removed again on 2026-10-05 | `/boot/firmware/cmdline.txt` | `cmdline.txt.bak-202610012219` (original) |
-| `apt full-upgrade`, kernel 6.6.31 → 6.12.109 (2026-10-05) | apt | 6.6.31 fallback: `kernel8-6.6.31.img`, `initramfs8-6.6.31`, `/root/kernel-fallback-6.6.31/` |
+| `apt full-upgrade`, kernel 6.6.31 → 6.12.109 (2026-10-05) | apt | none (6.6.31 fallback removed after testing) |
 
 No udev rule was needed for brightness. The existing `/lib/udev/rules.d/60-backlight.rules` already makes `brightness` writable by the `video` group, and the user is in that group. systemd also saves and restores the brightness across reboots.
 
