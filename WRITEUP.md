@@ -2,9 +2,9 @@
 
 Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Raydium **RM69052** driver IC), connected over MIPI DSI to a Compute Module 4 (DSI1, 4 lanes).
 
-**Status (2026-10-05): the panel shows an image directly on the CM4's DSI1**, 4 lanes at 120 Mbit/s per lane (about 18 Hz) so far. It took two fixes, and either fault alone kept the panel dark (see the [bring-up log for 2026-10-05](#bring-up-log-2026-10-05-root-causes-found)):
-1. **The Pi's D-PHY prepare times were too long.** The hardware adds about one byte clock (8 UI) to the value vc4 programs. Fixed with the patched `vc4` options `dsi_cprep=0 dsi_hsprep=8`.
-2. **The datasheet's D3 pinout is wrong.** Pins 27/28 are in the same order as the other pairs (P before N), not reversed. The prototype's D3 rework, done to match the datasheet, introduced the swap; the unpatched carrier board is correct.
+**Status (2026-10-05): the panel works directly on the CM4's DSI1 at 720×1280, 60 Hz, 4 lanes, with the stock `vc4` driver.** Driver 1.14 needs no module options; blank/unblank and brightness work. Two faults were found (see the [bring-up log](#bring-up-log-2026-10-05-root-causes-found)):
+1. **The datasheet's D3 pinout is wrong.** Pins 27/28 are in the same order as the other pairs (P before N), not reversed. The prototype's D3 rework, done to match the datasheet, introduced the swap; the unpatched carrier board is correct. **This was the fault that blocked 60 Hz.**
+2. **The Pi's D-PHY prepare times are too long at low bit rates.** The hardware adds one byte clock (8 UI) to the value vc4 programs. At 120 Mbit/s that puts TCLK-/THS-PREPARE out of spec (the panel can't sync); at 60 Hz (429 Mbit/s) the stock values land inside the window. Only matters for low refresh rates; the patched `vc4` in `vc4-patched/` (`dsi_cprep`/`dsi_hsprep`) fixes it. Worth reporting to Raspberry Pi.
 
 ---
 
@@ -12,9 +12,11 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 
 - [x] ~~Decide: continue with this panel or switch.~~ Continuing: the panel works on the Pi (2026-10-05).
 - [x] **Fix high-speed reception.** Done 2026-10-05: prepare times in `vc4` plus the D3 pinout (see the [bring-up log](#bring-up-log-2026-10-05-root-causes-found)).
-- [ ] **Raise to 60 Hz** (`clock_khz=66900`, 429 Mbit/s per lane). Re-measure TCLK-PREPARE (CKN) and THS-PREPARE (D0N) there and pick `dsi_cprep`/`dsi_hsprep` so both are inside the D-PHY window. Still unknown whether the hardware overhead is a fixed ~64 ns or one byte clock (8 UI). Then try the continuous clock again.
-- [ ] **Make the prepare fix permanent:** a proper `vc4` patch (candidate for the Raspberry Pi kernel), instead of the out-of-tree copy with module options.
-- [ ] **Clean up the panel driver:** decide which bring-up options (`tc_exact`, `early_power`, `noncont`, …) stay, and set working defaults.
+- [x] **Raise to 60 Hz.** Works with the stock `vc4`; the hardware overhead is one byte clock, so stock prepare times are in spec at 429 Mbit/s.
+- [x] **Clean up the panel driver defaults** (1.14): non-continuous clock, `early_power`, burst, `early_display_on` on; `debug` off; initial brightness = backlight level. No `/etc/modprobe.d/panel-h497.conf` needed.
+- [ ] **Report the low-rate prepare-time issue** to the Raspberry Pi kernel (measurements in the bring-up log), optionally with a `vc4` patch that accounts for the one-byte-clock overhead.
+- [ ] **Checksum flags during video:** the panel's error reports show checksum (`0x0400`), sometimes EoT sync/length (`0x2404`) while video runs, though the image looks correct. Unexplained; independent of the prepare times.
+- [ ] **Reads during video are unreliable** on vc4 (timeouts, wrong values); writes mostly work. Only matters for debugging.
 - [ ] **Remove the VBAT runaway risk:** the grey "runaway" seen on 2026-10-03 happened with corrupted video. Confirm VBAT current stays sane with real images at full brightness.
 - [x] **Connect the breakout board** with the Pi powered off, then power on.
 - [ ] **Check for an image.** The screen is black for about 6 s, then boot text and the login prompt appear, in landscape.
@@ -84,9 +86,9 @@ Both prepare times are about one byte clock (8 UI ≈ 64 ns) longer than vc4 pro
 
 **Step 6: unpatched carrier board** (original D3 routing, same order as the other pairs), 4 lanes, 120 Mbit/s, prepare fix: **image on the panel**, 0 errors at the debug reads after video starts, power mode `9C`.
 
-Reads during video still sometimes time out or return error-report bytes (for example `00 04` = checksum flag). Not yet clear whether that's real packet errors or the vc4 read path while video runs; to be checked at 60 Hz.
+Reads during video still sometimes time out or return error-report bytes (for example `00 04` = checksum flag).
 
-Configuration that works:
+Configuration that worked at 120 Mbit/s (superseded by step 8):
 ```
 # /boot/firmware/config.txt
 dtoverlay=panel-h497
@@ -95,6 +97,29 @@ options panel-h497 debug=1 clock_khz=20000 early_power=1 noncont=1 burst=N early
 # /etc/modprobe.d/vc4-dsi.conf (patched vc4 in /lib/modules/$(uname -r)/updates/)
 options vc4 dsi_cprep=0 dsi_hsprep=8
 ```
+
+**Step 7: 60 Hz (429 Mbit/s per lane, 1 UI = 2.33 ns).**
+
+| Setup | D0N time at 0 V after trigger | Image |
+|---|---|---|
+| Patched `vc4`, `dsi_cprep=8 dsi_hsprep=16` | ~40 ns (THS-PREPARE ≈ 50 ns, bottom of the 49–99 ns window), overshoot to 460 mV at HS entry | yes |
+| Patched `vc4`, stock values (24 UI) | ~60 ns (THS-PREPARE ≈ 70 ns, centred) | yes |
+| **Stock `vc4`** | — | **yes** |
+
+This proves the overhead is one byte clock (8 UI), not a fixed 64 ns. Checksum flags (`0x0400`) appear in both prepare settings. A blank/unblank with the patched module at 60 Hz once left the DSI controller stuck (`instat: 0x00000000`, every transfer times out) until reboot; not seen with the stock module.
+
+**Step 8: which panel driver options are needed (stock `vc4`, 60 Hz).**
+
+| Configuration | Image |
+|---|---|
+| Non-continuous clock + `early_power` | ✅, also after blank/unblank |
+| Continuous clock + `early_power` | ✅ at boot (but `early_power` only covers the first power-up, so blank/unblank would fail) |
+| Continuous clock, no `early_power` | ❌ panel receives nothing in HS (clock started before panel awake) |
+| Continuous clock + `late_init` | ❌ init commands time out: with a continuous clock, stock vc4 has an LP window only once per frame |
+| Burst instead of non-burst | ✅ |
+| Display On after video starts (no `early_display_on`) | ✅, but commands during video are unreliable, so the default stays "before video" |
+
+Final configuration, now the driver 1.14 defaults: non-continuous clock, `early_power`, burst, `early_display_on`, stock `vc4`, no module options. After unblank the panel briefly showed a dim level (fixed `init_brightness` of `0x20` until the backlight caught up); 1.14 sends the stored backlight level before video instead, and skips the brightness command when blanking (it timed out during video).
 
 ## Bring-up log (2026-10-03, first panel tests)
 
@@ -148,7 +173,7 @@ Caveat (2026-10-05): the TC358870 bring-up notes read the same registers differe
 
 Driver 1.13 adds `tc_exact=1`, which replays the board exactly: every init command as a DCS long write followed by the `0x03` spacer, no `53`/`51`, Sleep Out (`11 00`), 300 ms, Display On (`29 00`), 40 ms, then video, with non-burst sync pulses and a continuous clock.
 
-The stock `vc4` hard-codes pulse mode (`ST_END`), EoT off (`HSDT_EOT_DISABLE`) and LP stop per frame, ignoring the panel driver's mode flags. A patched copy with runtime options is kept in `vc4-patched/`. Since 2026-10-05 it is **installed** and also has `dsi_cprep`/`dsi_hsprep` for the prepare times.
+The stock `vc4` hard-codes pulse mode (`ST_END`), EoT off (`HSDT_EOT_DISABLE`) and LP stop per frame, ignoring the panel driver's mode flags. A patched copy with runtime options is kept in `vc4-patched/`. Since 2026-10-05 it also has `dsi_cprep`/`dsi_hsprep` for the prepare times. It is **not installed**: at 60 Hz the stock `vc4` works.
 
 **Conclusion of 2026-10-03 (superseded 2026-10-05):** HS packets arrived corrupted in every configuration. The D-PHY timing tests that day only made the prepare times *longer*, which made things worse; the real causes were the too-long prepare times and the D3 swap (see the [2026-10-05 log](#bring-up-log-2026-10-05-root-causes-found)).
 
