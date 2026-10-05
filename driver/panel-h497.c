@@ -69,6 +69,9 @@ MODULE_PARM_DESC(early_display_on, "Send Display On before video starts, as the 
 static bool early_power;
 module_param(early_power, bool, 0444);
 MODULE_PARM_DESC(early_power, "Power up and reset the panel at probe, before the DSI host starts its clock (default N)");
+static bool tc_exact;
+module_param(tc_exact, bool, 0444);
+MODULE_PARM_DESC(tc_exact, "Replay the TC358870 board exactly: all init as DCS long + 0x03 spacers, no 53/51, Sleep Out 300 ms, Display On before video, non-burst sync pulses, continuous clock (default N)");
 static int lane_reg = -1;
 module_param(lane_reg, int, 0644);
 MODULE_PARM_DESC(lane_reg, "Value for page 0 register BA (MIPI lane count); -1 = derive from lanes, (lanes-1)<<5 (default -1)");
@@ -224,6 +227,42 @@ static int h497_send_typed(struct h497 *ctx, const u8 *p, size_t size)
 	return 0;
 }
 
+/*
+ * Send one packet of exactly the given data type in LP mode. The core
+ * helpers choose the type from the length (2 bytes -> 0x15), but the
+ * TC358870 board sends every init command as a DCS long write (0x39).
+ */
+static ssize_t h497_write_typed(struct h497 *ctx, u8 type, const u8 *buf,
+				size_t len)
+{
+	const struct mipi_dsi_host_ops *ops = ctx->dsi->host->ops;
+	struct mipi_dsi_msg msg = {
+		.channel = ctx->dsi->channel,
+		.type = type,
+		.flags = MIPI_DSI_MSG_USE_LPM,
+		.tx_buf = buf,
+		.tx_len = len,
+	};
+
+	if (!ops || !ops->transfer)
+		return -ENOSYS;
+
+	return ops->transfer(ctx->dsi->host, &msg);
+}
+
+/* TC358870 form: DCS long write, then an empty generic short write (0x03) */
+static ssize_t h497_write_tc(struct h497 *ctx, const u8 *buf, size_t len)
+{
+	ssize_t ret;
+
+	ret = h497_write_typed(ctx, MIPI_DSI_DCS_LONG_WRITE, buf, len);
+	if (ret < 0)
+		return ret;
+
+	return h497_write_typed(ctx, MIPI_DSI_GENERIC_SHORT_WRITE_0_PARAM,
+				NULL, 0);
+}
+
 static int h497_send_init(struct h497 *ctx)
 {
 	const u8 *p = h497_init;
@@ -257,7 +296,16 @@ static int h497_send_init(struct h497 *ctx)
 				dev_info(&ctx->dsi->dev, "BA = 0x%02x\n", lanes_cmd[1]);
 		}
 
-		ret = mipi_dsi_dcs_write_buffer(ctx->dsi, cmd, len);
+		if (tc_exact) {
+			/* The capture has no Write CTRL Display (53) */
+			if (p[0] == MIPI_DCS_WRITE_CONTROL_DISPLAY) {
+				p += len;
+				continue;
+			}
+			ret = h497_write_tc(ctx, cmd, len);
+		} else {
+			ret = mipi_dsi_dcs_write_buffer(ctx->dsi, cmd, len);
+		}
 		if (ret < 0) {
 			dev_err(&ctx->dsi->dev, "init cmd 0x%02x failed: %zd\n",
 				p[0], ret);
@@ -480,6 +528,37 @@ static int h497_init_and_wake(struct h497 *ctx)
 	if (ret)
 		return ret;
 
+	/*
+	 * TC358870 order: Sleep Out and Display On as 0x15 with a 0x00
+	 * parameter, 300 ms and 40 ms waits, no brightness, all before video.
+	 */
+	if (tc_exact) {
+		static const u8 sleep_out[] = { MIPI_DCS_EXIT_SLEEP_MODE, 0x00 };
+		static const u8 display_on[] = { MIPI_DCS_SET_DISPLAY_ON, 0x00 };
+
+		ret = mipi_dsi_dcs_write_buffer(ctx->dsi, sleep_out,
+						sizeof(sleep_out));
+		if (ret < 0) {
+			dev_err(dev, "sleep out failed: %d\n", ret);
+			return ret;
+		}
+		msleep(300);
+		h497_debug_read(ctx, "after sleep out");
+
+		ret = mipi_dsi_dcs_write_buffer(ctx->dsi, display_on,
+						sizeof(display_on));
+		if (ret < 0) {
+			dev_err(dev, "display on failed: %d\n", ret);
+			return ret;
+		}
+		msleep(40);
+		ctx->display_on_sent = true;
+		h497_debug_read(ctx, "after display on (before video)");
+
+		ctx->prepared = true;
+		return 0;
+	}
+
 	ret = mipi_dsi_dcs_exit_sleep_mode(ctx->dsi);
 	if (ret < 0) {
 		dev_err(dev, "sleep out failed: %d\n", ret);
@@ -701,6 +780,10 @@ static int h497_bl_update_status(struct backlight_device *bl)
 	if (!ctx->prepared)
 		return 0;
 
+	/* The TC358870 board never sends brightness */
+	if (tc_exact)
+		return 0;
+
 	/* One-byte form; the kernel helper sends a 16-bit value */
 	ret = mipi_dsi_dcs_write(ctx->dsi, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
 				 &level, 1);
@@ -764,11 +847,14 @@ static int h497_probe(struct mipi_dsi_device *dsi)
 
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_LPM;
-	if (burst)
+	if (tc_exact)
+		/* Non-burst sync pulses, continuous clock; ignores burst/noncont */
+		dsi->mode_flags |= MIPI_DSI_MODE_VIDEO_SYNC_PULSE;
+	else if (burst)
 		dsi->mode_flags |= MIPI_DSI_MODE_VIDEO_BURST;
 	else
 		dsi->mode_flags |= MIPI_DSI_MODE_VIDEO_SYNC_PULSE;
-	if (noncont)
+	if (noncont && !tc_exact)
 		dsi->mode_flags |= MIPI_DSI_CLOCK_NON_CONTINUOUS;
 	if (no_eot)
 		dsi->mode_flags |= MIPI_DSI_MODE_NO_EOT_PACKET;
