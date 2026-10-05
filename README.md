@@ -49,12 +49,30 @@ Set `display_auto_detect=0` in the same file, then reboot.
 |---|---|---|
 | `dsi0` | off (DSI1) | Use the DSI0 port instead of DSI1 |
 | `lanes=<n>` | `4` | Number of DSI data lanes wired (1–4). Pi 4B: `2` |
-| `rotation=<deg>` | `0` | Panel mounting rotation: `0`, `90`, `180`, `270` |
+| `rotation=<deg>` | `270` | Panel mounting rotation: `0`, `90`, `180`, `270`. `270` is landscape as mounted in the PsioPi. Desktops and the console follow it; don't also set `fbcon=rotate` in `cmdline.txt`, which would override it |
 | `reset_gpio=<n>` | `27` | Panel reset (RESX), active low |
 | `vddi_gpio=<n>` | `18` | Enable for the 1.8 V VDDI regulator |
 | `vdd_gpio=<n>` | `23` | Enable for the 3.1 V VDD regulator |
 
 Example: `dtoverlay=panel-h497,lanes=2,rotation=90,reset_gpio=5`
+
+## HAT ID EEPROM (PsioPi mainboard)
+
+The PsioPi mainboard has a CAT24C512 HAT ID EEPROM on GPIO 0/1. With the overlay embedded in it, the firmware loads the panel overlay automatically and no `dtoverlay=` line is needed in `config.txt`. The driver (DKMS) still has to be installed.
+
+```bash
+hat/make-eeprom.sh            # build hat/psiopi.eep from hat/eeprom_settings.txt + panel-h497.dts
+hat/make-eeprom.sh --flash    # also back up the EEPROM, write the image and verify it (needs sudo)
+```
+
+The image uses the classic (v1) HAT format: vendor `RasmusB`, product `PsioPi Mainboard`, product ID `0x0001`, version `0x0001` (v0.1). The embedded overlay always uses its defaults; for other parameters, use `dtoverlay=panel-h497,...` in `config.txt` instead. After changing the overlay, rebuild and flash the EEPROM again. The WP pin is left floating (internal pull-down), so the EEPROM is writable.
+
+Check after a reboot:
+
+```bash
+cat /proc/device-tree/hat/vendor /proc/device-tree/hat/product; echo
+sudo vclog -m | grep -i hat
+```
 
 ## Brightness
 

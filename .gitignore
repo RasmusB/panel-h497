@@ -20,3 +20,7 @@ panel-touch-h497.dts
 # Build output of the patched vc4 reference
 vc4-patched/*.o
 vc4-patched/*.ko
+
+# HAT EEPROM images and backups (built by hat/make-eeprom.sh)
+hat/*.eep
+hat/eeprom-backup-*.bin

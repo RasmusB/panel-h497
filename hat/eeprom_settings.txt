@@ -1,0 +1,51 @@
+########################################################################
+# HAT ID EEPROM settings for the PsioPi mainboard (CAT24C512, 64 KB)
+#
+# Classic (v1) HAT format with the panel overlay embedded, so the board
+# describes itself. Build and flash with hat/make-eeprom.sh.
+#
+# Format: https://github.com/raspberrypi/utils/tree/master/eeptools
+########################################################################
+
+########################################################################
+# Vendor info
+
+# 128 bit UUID. If left at zero eepmake tool will auto-generate
+# RFC 4122 compliant UUID
+product_uuid 00000000-0000-0000-0000-000000000000
+
+# 16 bit product id
+product_id 0x0001
+
+# 16 bit product version: high byte major, low byte minor (0x0001 = v0.1,
+# prototype)
+product_ver 0x0001
+
+# ASCII vendor string  (max 255 characters)
+vendor "RasmusB"
+
+# ASCII product string (max 255 characters)
+product "PsioPi Mainboard"
+
+########################################################################
+# GPIO bank settings, set to nonzero to change from the default.
+
+# drive strength, 0=default, 1-8=2,4,6,8,10,12,14,16mA, 9-15=reserved
+gpio_drive 0
+
+# 0=default, 1=slew rate limiting, 2=no slew limiting, 3=reserved
+gpio_slew 0
+
+# 0=default, 1=hysteresis disabled, 2=hysteresis enabled, 3=reserved
+gpio_hysteresis 0
+
+# The board does not back-power the Pi via the 5V GPIO header pins
+back_power 0
+
+########################################################################
+# GPIO pins
+#
+# None are set here: the panel GPIOs (18 VDDI enable, 23 VDD enable,
+# 27 reset, 22 TE) are claimed by the overlay and its driver, which
+# sequence the panel supplies. Setting them as outputs from the EEPROM
+# would let the firmware drive them before the driver takes over.

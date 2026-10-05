@@ -6,7 +6,8 @@
  * Parameters (defaults match the CM4 carrier board):
  *   dsi0           Use DSI0 instead of DSI1
  *   lanes=<n>      DSI data lanes, 1-4 (default 4; Pi 4B connector: 2)
- *   rotation=<deg> Panel mounting rotation: 0, 90, 180 or 270 (default 0)
+ *   rotation=<deg> Panel mounting rotation: 0, 90, 180 or 270 (default 270,
+ *                  landscape as mounted in the PsioPi)
  *   reset_gpio=<n> RESX GPIO, active low (default 27)
  *   vddi_gpio=<n>  VDDI 1.8 V LDO enable GPIO, active high (default 18)
  *   vdd_gpio=<n>   VDD 3.1 V LDO enable GPIO, active high (default 23)
@@ -64,7 +65,7 @@
                 vdd-supply = <&panel_vdd>;
                 reset-gpios = <&gpio 27 GPIO_ACTIVE_LOW>;
                 dsi-lanes = <4>;
-                rotation = <0>;
+                rotation = <270>;
 
                 port {
                     panel_in: endpoint {
