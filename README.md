@@ -19,23 +19,31 @@ Linux driver and device tree overlay for the AUO/Topwin **H497TLB01** 4.97" 720Ã
 
 ## Install
 
-Requires Raspberry Pi OS (64-bit) with kernel headers (`linux-headers-rpi-v8`, normally installed).
+Requires Raspberry Pi OS (64-bit) with kernel headers (`linux-headers-rpi-v8` on Pi 4/CM4, normally installed).
+
+Two DKMS packages:
+
+| Package | Contents |
+|---|---|
+| `panel-h497-dkms` | Panel driver, plus the `panel-h497` overlay (copied to `/boot/firmware/overlays/`) |
+| `rmi4-psiopi-dkms` | Synaptics RMI4 touch driver (kernel 6.12 and newer) |
+
+Download them from the latest CI run (artifact `panel-h497-bookworm`), or build them yourself:
 
 ```bash
 sudo apt install --no-install-recommends dkms device-tree-compiler cpp
-
-# Driver (DKMS)
-VER=1.14
-sudo mkdir -p /usr/src/panel-h497-$VER
-sudo cp driver/{panel-h497.c,Makefile,dkms.conf} /usr/src/panel-h497-$VER/
-sudo dkms install panel-h497/$VER
-
-# Overlay
-./compile-overlay.sh panel-h497.dts
-sudo cp panel-h497.dtbo /boot/firmware/overlays/
+packaging/build-debs.sh
 ```
 
-Then add to `/boot/firmware/config.txt`, after `dtoverlay=vc4-kms-v3d`:
+Then install, which also pulls in `dkms` if needed:
+
+```bash
+sudo apt install ./packaging/out/panel-h497-dkms_*_all.deb ./packaging/out/rmi4-psiopi-dkms_*_all.deb
+```
+
+DKMS builds the drivers for every installed kernel, and rebuilds them automatically when `apt` installs a new kernel. `sudo apt remove panel-h497-dkms rmi4-psiopi-dkms` removes everything again.
+
+**On the PsioPi mainboard** nothing else is needed: the firmware loads the overlay from the board's HAT EEPROM. **Without the HAT EEPROM**, add to `/boot/firmware/config.txt`, after `dtoverlay=vc4-kms-v3d`:
 
 ```
 dtoverlay=panel-h497
@@ -77,15 +85,7 @@ sudo vclog -m | grep -i hat
 
 ## Touchscreen
 
-The panel's Synaptics S3402 touch controller uses the kernel's RMI4 driver, which the Raspberry Pi kernel doesn't include. `rmi4/` builds it as a DKMS package:
-
-```bash
-V=1.0
-sudo mkdir -p /usr/src/rmi4-psiopi-$V
-sudo cp rmi4/{Makefile,dkms.conf,*.c,*.h} /usr/src/rmi4-psiopi-$V/
-sudo cp -r rmi4/include /usr/src/rmi4-psiopi-$V/
-sudo dkms install rmi4-psiopi/$V
-```
+The panel's Synaptics S3402 touch controller uses the kernel's RMI4 driver, which the Raspberry Pi kernel doesn't include. `rmi4/` builds it as a DKMS module, packaged as `rmi4-psiopi-dkms` (see [Install](#install)).
 
 The overlay adds the touch node (I2C on GPIO 44/45 at 0x20, INT GPIO 25, reset GPIO 24) and reports landscape coordinates (1280 Ã— 720) to match `rotation=270`. Use `touch=off` to leave it out.
 

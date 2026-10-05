@@ -16,7 +16,8 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 - [x] **Clean up the panel driver defaults** (1.14): non-continuous clock, `early_power`, burst, `early_display_on` on; `debug` off; initial brightness = backlight level. No `/etc/modprobe.d/panel-h497.conf` needed.
 - [ ] **Report the low-rate prepare-time issue** to the Raspberry Pi kernel (measurements in the bring-up log), optionally with a `vc4` patch that accounts for the one-byte-clock overhead.
 - [ ] **Checksum flags during video:** the panel's error reports show checksum (`0x0400`), sometimes EoT sync/length (`0x2404`) while video runs, though the image looks correct. Unexplained; independent of the prepare times.
-- [ ] **Reads during video are unreliable** on vc4 (timeouts, wrong values); writes mostly work. Only matters for debugging.
+- [ ] **Reads during video are unreliable** on vc4 (timeouts, wrong values). Only matters for debugging.
+- [x] **Commands during video time out now and then** (2026-10-05, kernel 6.12): vc4 slips low-power commands into the running video and gives up after 500 ms (`DSI transfer failed whilst in HS mode stat: 0x00020003`, `-ETIMEDOUT`); 3 of 40 brightness writes failed. At one boot `systemd-backlight` failed to restore the brightness twice in a row. Driver 1.15 retries commands sent during video (brightness, Display On/Off, Sleep In) up to 3 times on `-ETIMEDOUT`.
 - [ ] **Remove the VBAT runaway risk:** the grey "runaway" seen on 2026-10-03 happened with corrupted video. Confirm VBAT current stays sane with real images at full brightness.
 - [x] **Connect the breakout board** with the Pi powered off, then power on.
 - [x] **Image** (2026-10-05): boot text and login prompt, landscape, 60 Hz.
@@ -32,6 +33,7 @@ Linux support for the AUO/Topwin **H497TLB01** 4.97" 720×1280 AMOLED panel (Ray
 - [ ] **Next board revision:** route D3 like the other pairs and **ignore the datasheet's pin 27 = D3N / pin 28 = D3P**, which is wrong (proven 2026-10-05: the reworked board fails, the unpatched one works). **HAT EEPROM WP:** the solder jumper from WP to 3.3 V uses a *closed* footprint, so the EEPROM is permanently write-protected (writes fail with data-byte NAKs). Use an open jumper, plus a defined pull-down so WP isn't left floating. **Touch I2C:** SCL and SDA are swapped on the 1.8 V side of the TCA9800 level shifter (between the shifter and panel pins 35/36); the S3402 only answers with the lines swapped. **TP_INT** has no external pull-up; add one (to 1.8 V, the touch side) — the prototype uses the Pi's internal pull-up. Prototype VBAT is fed from 5 V, above the 4.5 V recommended maximum (abs max 5.5 V); production will use the LiPo.
 - [x] **Power-off test** (blank/unblank via `/sys/class/graphics/fb0/blank`): clean since driver 1.14, no errors in `dmesg`.
 - [x] **Program the HAT EEPROM** (2026-10-05): classic v1 format, vendor `RasmusB`, product `PsioPi Mainboard`, ID `0x0001`, version `0x0001` (v0.1), panel overlay embedded (defaults incl. `rotation=270`). Built and flashed with `hat/make-eeprom.sh`. The firmware logs `Loaded HAT overlay`; `config.txt` no longer needs a `dtoverlay=panel-h497` line, and `fbcon=rotate` is gone from `cmdline.txt` (the console follows the overlay's panel orientation). The board's WP jumper had to be cut first (see board revision notes); with WP floating, writes work.
+- [x] **Debian packages** (2026-10-05): `packaging/build-debs.sh` builds `panel-h497-dkms` and `rmi4-psiopi-dkms` with `dpkg-deb`; CI attaches them to every run. Installed on the Pi from the packages instead of the manual DKMS steps.
 - [x] **Pushed to GitHub** (https://github.com/RasmusB/panel-h497). CI builds against Raspberry Pi OS bookworm (6.12) and trixie (6.18) kernels for Pi 4 and Pi 5 and passes.
 - [ ] **Optional: bigger console font.** Run `sudo dpkg-reconfigure console-setup` and pick Terminus 16x32.
 - [x] **Touchscreen (Synaptics S3402)** works (2026-10-05): RMI4 driver as the `rmi4-psiopi` DKMS package, touch node in the overlay, landscape coordinates. See [Touchscreen](#touchscreen).
@@ -239,6 +241,7 @@ All in `~/workspace/dts/`:
 | `LICENSE` | GPL-2.0 |
 | `.github/workflows/build.yml` | CI: builds the driver against the current Raspberry Pi OS kernels (bookworm and trixie; Pi 4 and Pi 5 kernels) and compiles the overlay, on every push and weekly. |
 | `compile-overlay.sh` | Compiles a `.dts` into a `.dtbo`, running the preprocessor for `#include`s, and prints install instructions. |
+| `packaging/build-debs.sh` | Builds the `panel-h497-dkms` and `rmi4-psiopi-dkms` packages into `packaging/out/`. |
 | `hat/eeprom_settings.txt` / `hat/make-eeprom.sh` | HAT ID EEPROM contents for the PsioPi mainboard, and the script that builds (and with `--flash` writes and verifies) the image with the overlay embedded. |
 | `vc4-patched/` | Copy of the Raspberry Pi `vc4` driver (6.6.31) with bring-up options (`dsi_cprep`/`dsi_hsprep`, EoT, sync mode, blanking). Not installed; only needed for low bit rates. |
 | `i2c-dump.csv` | Raw I2C capture from the TC358870 board (local only, not in git). |
@@ -286,7 +289,7 @@ Common: 35 00 (TE on) | 53 20 (brightness ctrl, added) | 11 (Sleep Out) | 29 (Di
 | What | Where | Backup |
 |---|---|---|
 | `dkms` package (installed with `--no-install-recommends`) | apt | n/a |
-| Driver source registered with DKMS | `/usr/src/panel-h497-1.14/` | none (new) |
+| Packages `panel-h497-dkms` and `rmi4-psiopi-dkms` (sources in `/usr/src/panel-h497-<ver>/`, `/usr/src/rmi4-psiopi-<ver>/`, registered with DKMS by their `postinst`) | apt / dpkg | none (new) |
 | Kernel module, built by DKMS | `/lib/modules/<kernel>/updates/dkms/panel-h497.ko.xz` (6.6.31, 6.12.109 v8 and 2712) | none (new file) |
 | Overlay | Embedded in the board's HAT EEPROM; also installed as `/boot/firmware/overlays/panel-h497.dtbo` (older build, default rotation 0, unused) | none |
 | Removed `dtoverlay=panel-rm69052`; no panel `dtoverlay` line any more (the HAT overlay replaces it); `dtdebug=1` removed; `display_auto_detect=0` (was already set) | `/boot/firmware/config.txt` | `config.txt.bak-202610012156` (original) |
@@ -383,7 +386,18 @@ dkms status
 
 If the build failed, for example because a future kernel changed the display API, the panel stays dark until the driver is fixed. The log is in `/var/lib/dkms/panel-h497/<version>/build/make.log`. CI builds the driver weekly against the current Raspberry Pi OS kernels, so API breaks should show up there first.
 
-**Changing the driver:** DKMS builds from its own copy in `/usr/src/panel-h497-<version>/`, not from `~/workspace/dts/driver/`. After editing the driver, bump `PACKAGE_VERSION` in `dkms.conf`, then:
+**Changing a driver:** DKMS builds from the packaged copy in `/usr/src/`, not from `~/workspace/dts/`. After editing, bump `PACKAGE_VERSION` in the module's `dkms.conf`, then rebuild and install the packages:
+
+```bash
+packaging/build-debs.sh
+sudo apt install ./packaging/out/panel-h497-dkms_*_all.deb ./packaging/out/rmi4-psiopi-dkms_*_all.deb
+```
+
+The old version's `prerm` removes it from DKMS, the new version's `postinst` builds it for every installed kernel. Packaging notes:
+- `/boot/firmware` is FAT, where dpkg can't make the backup hard links it needs to replace a file. The overlay is therefore shipped in `/usr/lib/panel-h497/` and copied to `/boot/firmware/overlays/` by `postinst` (removed by `postrm`), as Debian's firmware packages do.
+- `rmi4-psiopi` uses 6.12 sources and is limited to kernels 6.12 and newer (`BUILD_EXCLUSIVE_KERNEL`); DKMS prints an `Error! ... BUILD_EXCLUSIVE` notice for older kernels, which `postinst` treats as a skip (exit code 77).
+
+Without the packages, by hand (development only):
 
 ```bash
 OLD=1.14; V=1.15   # installed and new version
@@ -421,9 +435,7 @@ Solution:
 2. `cmdline.txt` no longer has panel changes. The original is `cmdline.txt.bak-202610012219`.
 3. Remove the driver and the overlay:
    ```bash
-   sudo dkms remove panel-h497/1.14 --all
-   sudo rm -r /usr/src/panel-h497-1.14
-   sudo rm /boot/firmware/overlays/panel-h497.dtbo
+   sudo apt remove panel-h497-dkms rmi4-psiopi-dkms
    ```
 4. Reboot.
 
