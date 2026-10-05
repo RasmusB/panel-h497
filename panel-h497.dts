@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: (GPL-2.0 OR MIT)
 /*
- * AUO/Topwin H497TLB01 720x1280 AMOLED (RM69052) on Raspberry Pi DSI.
- * Display only; requires the panel-h497 kernel module (driver/).
+ * AUO/Topwin H497TLB01 720x1280 AMOLED (RM69052) on Raspberry Pi DSI, with
+ * its Synaptics S3402 touch controller (RMI4 over I2C).
+ * Requires the panel-h497 kernel module (driver/) and, for touch, the
+ * rmi4-psiopi modules (rmi4/), since the Pi kernel has no RMI4 driver.
  *
  * Parameters (defaults match the CM4 carrier board):
  *   dsi0           Use DSI0 instead of DSI1
@@ -11,6 +13,13 @@
  *   reset_gpio=<n> RESX GPIO, active low (default 27)
  *   vddi_gpio=<n>  VDDI 1.8 V LDO enable GPIO, active high (default 18)
  *   vdd_gpio=<n>   VDD 3.1 V LDO enable GPIO, active high (default 23)
+ *   touch          Touch controller on i2c_csi_dsi (GPIO 44/45) at 0x20,
+ *                  TP_INT GPIO 25, TP_RESX GPIO 24 (default on; touch=off
+ *                  to leave it out)
+ *
+ * The touch controller is powered from the panel rails. Its driver keeps
+ * both rails enabled while bound, so blanking only resets the panel and the
+ * touch stays powered.
  *
  * Example: dtoverlay=panel-h497,lanes=2,rotation=90,reset_gpio=5
  */
@@ -41,6 +50,9 @@
                 regulator-max-microvolt = <3100000>;
                 gpio = <&gpio 23 GPIO_ACTIVE_HIGH>;
                 enable-active-high;
+                /* VDD must never come up before VDDI, whichever of the
+                 * panel and touch drivers enables it first */
+                vin-supply = <&panel_vddi>;
             };
         };
     };
@@ -76,6 +88,70 @@
         };
     };
 
+    /* Touch: enable the CM4's DSI/CSI I2C bus (i2c0 via the mux) */
+    fragment@2 {
+        target = <&i2c0if>;
+        __overlay__ {
+            status = "okay";
+        };
+    };
+
+    fragment@3 {
+        target = <&i2c0mux>;
+        __overlay__ {
+            status = "okay";
+        };
+    };
+
+    /* TP_INT has no pull-up on the prototype board: use the Pi's */
+    fragment@4 {
+        target = <&gpio>;
+        __overlay__ {
+            touch_pins: touch_pins {
+                brcm,pins = <25>;
+                brcm,function = <0>;    /* input */
+                brcm,pull = <2>;        /* pull-up */
+            };
+        };
+    };
+
+    fragment@5 {
+        target = <&i2c_csi_dsi>;
+        __overlay__ {
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "okay";
+
+            touchscreen@20 {
+                compatible = "syna,rmi4-i2c";
+                reg = <0x20>;
+                #address-cells = <1>;
+                #size-cells = <0>;
+                pinctrl-names = "default";
+                pinctrl-0 = <&touch_pins>;
+                interrupt-parent = <&gpio>;
+                interrupts = <25 8>;    /* IRQ_TYPE_LEVEL_LOW: RMI4 ATTN */
+                reset-gpios = <&gpio 24 GPIO_ACTIVE_LOW>;
+                vdd-supply = <&panel_vdd>;
+                vio-supply = <&panel_vddi>;
+                syna,startup-delay-ms = <100>;
+
+                rmi4-f01@1 {
+                    reg = <0x1>;
+                    syna,nosleep-mode = <1>;
+                };
+
+                /* Report landscape coordinates (1280 x 720) matching
+                 * rotation=270: raw Y inverted, then X/Y swapped */
+                touch_f12: rmi4-f12@12 {
+                    reg = <0x12>;
+                    touchscreen-inverted-y;
+                    touchscreen-swapped-x-y;
+                };
+            };
+        };
+    };
+
     __overrides__ {
         dsi0 = <&dsi_frag>, "target:0=", <&dsi0>;
         lanes = <&panel>, "dsi-lanes:0";
@@ -83,5 +159,6 @@
         reset_gpio = <&panel>, "reset-gpios:4";
         vddi_gpio = <&panel_vddi>, "gpio:4";
         vdd_gpio = <&panel_vdd>, "gpio:4";
+        touch = <0>, "=2=3=4=5";
     };
 };
